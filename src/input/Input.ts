@@ -13,6 +13,8 @@ export class Input {
   private readonly held = new Set<string>();
   private readonly pressedThisFrame = new Set<string>();
   private readonly buttons = new Set<number>();
+  private readonly pressedButtons = new Set<number>();
+  private readonly releasedButtons = new Set<number>();
 
   /** Mouse position in CSS pixels relative to the canvas top-left. */
   mouseX = 0;
@@ -50,6 +52,16 @@ export class Input {
     return this.buttons.has(button);
   }
 
+  /** True if `button` transitioned to down during the frame just gone. */
+  wasButtonPressed(button: number): boolean {
+    return this.pressedButtons.has(button);
+  }
+
+  /** True if `button` transitioned to up during the frame just gone. */
+  wasButtonReleased(button: number): boolean {
+    return this.releasedButtons.has(button);
+  }
+
   /** Accumulated wheel deltaY since last frame (negative = scroll up). */
   consumeWheel(): number {
     const w = this.wheelAccum;
@@ -68,6 +80,8 @@ export class Input {
   /** Clear per-frame state. Call once at the end of every rendered frame. */
   endFrame(): void {
     this.pressedThisFrame.clear();
+    this.pressedButtons.clear();
+    this.releasedButtons.clear();
   }
 
   dispose(): void {
@@ -118,11 +132,13 @@ export class Input {
 
   private onMouseDown = (e: MouseEvent): void => {
     this.buttons.add(e.button);
+    this.pressedButtons.add(e.button);
     if (e.button === 1) e.preventDefault(); // suppress middle-click autoscroll
   };
 
   private onMouseUp = (e: MouseEvent): void => {
     this.buttons.delete(e.button);
+    this.releasedButtons.add(e.button);
   };
 
   private onMouseEnter = (): void => {

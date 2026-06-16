@@ -8,6 +8,10 @@ import { Random } from "@/core/Random";
 import { gridToWorld } from "@/math/iso";
 import type { Vec2 } from "@/math/Vec2";
 import { DEFAULT_MAP_W, DEFAULT_MAP_H, SIM_SEED_OFFSET } from "@/config";
+import { MovementSystem } from "@/systems/MovementSystem";
+import { spawnUnit } from "@/game/spawn";
+import { isWalkable } from "@/pathfinding/astar";
+import { PLAYER_ID } from "@/game/components";
 
 export interface WorldBounds {
   minX: number;
@@ -70,8 +74,42 @@ export class Game {
       this.map = generateMap(DEFAULT_MAP_W, DEFAULT_MAP_H, genRng);
       this.rng = new Random((seed ^ SIM_SEED_OFFSET) >>> 0);
       this.world = new World();
+      this.spawnInitialUnits();
     }
-    this.systems = [];
+    // Systems are logic, not state — recreated on load, never serialized.
+    this.systems = [new MovementSystem(this.map)];
+  }
+
+  /** Place the player's starting villagers on walkable tiles near the centre. */
+  private spawnInitialUnits(): void {
+    const cx = Math.floor(this.map.width / 2);
+    const cy = Math.floor(this.map.height / 2);
+
+    // Spiral outward from the centre, dropping villagers on walkable tiles.
+    let placed = 0;
+    const target = 8;
+    for (let r = 0; r <= 12 && placed < target; r++) {
+      for (let dy = -r; dy <= r && placed < target; dy++) {
+        for (let dx = -r; dx <= r && placed < target; dx++) {
+          if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue; // current ring only
+          if (isWalkable(this.map, cx + dx, cy + dy)) {
+            spawnUnit(this.world, "villager", cx + dx, cy + dy, PLAYER_ID);
+            placed++;
+          }
+        }
+      }
+    }
+
+    // A couple of (unselectable) enemy villagers, to show owner colours and
+    // that selection ignores other players' units.
+    for (const [ox, oy] of [
+      [10, 0],
+      [11, 1],
+    ] as const) {
+      if (isWalkable(this.map, cx + ox, cy + oy)) {
+        spawnUnit(this.world, "villager", cx + ox, cy + oy, 1);
+      }
+    }
   }
 
   /** Run one fixed simulation tick: every system in order, then advance time. */

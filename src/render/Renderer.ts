@@ -33,7 +33,18 @@ export class Renderer {
     this.canvas.height = Math.round(this.cssHeight * this.dpr);
   }
 
-  render(camera: Camera, map: GameMap, showGrid: boolean): void {
+  /**
+   * Draw a frame. The optional `overlay` is invoked after the terrain pass with
+   * the (already DPR-scaled, CSS-pixel) context, so game-specific layers (units,
+   * selection marquee, order pings) can draw on top without the Renderer having
+   * to know about them.
+   */
+  render(
+    camera: Camera,
+    map: GameMap,
+    showGrid: boolean,
+    overlay?: (ctx: CanvasRenderingContext2D) => void,
+  ): void {
     const ctx = this.ctx;
     // Reset transform, then scale so 1 unit == 1 CSS pixel.
     ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
@@ -43,5 +54,7 @@ export class Renderer {
     ctx.fillRect(0, 0, this.cssWidth, this.cssHeight);
 
     drawMap(ctx, camera, map, showGrid);
+
+    if (overlay !== undefined) overlay(ctx);
   }
 }
