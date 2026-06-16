@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+    <title>Bronze Age</title>
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        overflow: hidden;
+        background: #0b0d10;
+        font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+        color: #e6e6e6;
+      }
+      #app {
+        position: fixed;
+        inset: 0;
+      }
+      /* Canvas fills the viewport; rendered at devicePixelRatio for crispness. */
+      #game {
+        display: block;
+        width: 100%;
+        height: 100%;
+        cursor: crosshair;
+        image-rendering: pixelated;
+      }
+      #hud {
+        position: fixed;
+        top: 8px;
+        left: 8px;
+        padding: 6px 10px;
+        font-size: 12px;
+        line-height: 1.5;
+        background: rgba(0, 0, 0, 0.45);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 6px;
+        pointer-events: none;
+        white-space: pre;
+        user-select: none;
+      }
+      #help {
+        position: fixed;
+        bottom: 8px;
+        left: 8px;
+        font-size: 11px;
+        color: #9aa4ad;
+        background: rgba(0, 0, 0, 0.35);
+        padding: 6px 10px;
+        border-radius: 6px;
+        pointer-events: none;
+        user-select: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <canvas id="game"></canvas>
+      <div id="hud"></div>
+      <div id="help">
+        WASD / Arrows / edge-scroll: pan &nbsp;•&nbsp; Wheel: zoom &nbsp;•&nbsp; Middle-drag: pan
+        &nbsp;•&nbsp; Space: pause &nbsp;•&nbsp; G: grid
+      </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
