@@ -12,10 +12,11 @@ import { DEFAULT_MAP_W, DEFAULT_MAP_H, SIM_SEED_OFFSET } from "@/config";
 import { Occupancy } from "@/map/Occupancy";
 import { MovementSystem } from "@/systems/MovementSystem";
 import { GatherSystem } from "@/systems/GatherSystem";
+import { BuildSystem } from "@/systems/BuildSystem";
 import { EconomySystem } from "@/systems/EconomySystem";
 import { spawnUnit, spawnResourceNode, spawnBuilding, spawnPlayer } from "@/game/spawn";
 import { canStand } from "@/pathfinding/astar";
-import { PLAYER_ID, CBuilding, type ResourceKind } from "@/game/components";
+import { PLAYER_ID, CBuilding, type Building, type ResourceKind } from "@/game/components";
 
 export interface WorldBounds {
   minX: number;
@@ -81,10 +82,11 @@ export class Game {
       this.setupEconomy();
     }
     // Systems are logic, not state — recreated on load, never serialized.
-    // Order: gather (sets paths, harvests, deposits) → movement (consumes
-    // paths) → economy (population recount + training).
+    // Order: gather + build (set paths, harvest, construct) → movement
+    // (consumes paths) → economy (population recount + training).
     this.systems = [
       new GatherSystem(this.map, this.occ),
+      new BuildSystem(this.map, this.occ),
       new MovementSystem(this.map, this.occ),
       new EconomySystem(this.map, this.occ),
     ];
@@ -96,6 +98,11 @@ export class Game {
     for (const [, b] of this.world.query(CBuilding)) {
       this.occ.setRect(b.tx, b.ty, b.w, b.h, true);
     }
+  }
+
+  /** Block (or clear) a building's footprint — call when placing/removing one. */
+  setBuildingOccupancy(b: Building, blocked: boolean): void {
+    this.occ.setRect(b.tx, b.ty, b.w, b.h, blocked);
   }
 
   // --- initial economy setup (fresh game only) ----------------------------

@@ -2,7 +2,8 @@ import type { Entity } from "@/ecs/types";
 import type { World } from "@/ecs/World";
 import type { Camera } from "@/render/Camera";
 import type { Input } from "@/input/Input";
-import { CUnit, CTransform, PLAYER_ID, type Transform, type Unit } from "@/game/components";
+import { CUnit, CTransform, CBuilding, PLAYER_ID, type Transform, type Unit } from "@/game/components";
+import { worldToTile } from "@/math/iso";
 
 /**
  * Normalized marquee rectangle in screen-space CSS pixels (x0<=x1, y0<=y1),
@@ -36,8 +37,15 @@ const DOUBLE_CLICK_SQ = DOUBLE_CLICK_PX * DOUBLE_CLICK_PX;
  * before `Input.endFrame()`.
  */
 export class SelectionController {
-  /** Currently selected entities (owner 0 only). The renderer reads this. */
+  /** Currently selected units (owner 0 only). The renderer reads this. */
   readonly selected = new Set<Entity>();
+
+  /**
+   * The single selected building, or null. Buildings are single-select and
+   * mutually exclusive with the unit selection — clicking a building selects
+   * just it (for its command panel); clicking a unit / box-drag clears it.
+   */
+  selectedBuilding: Entity | null = null;
 
   /** Screen-space pos of the active left-press, or null when no press is live. */
   private pressX = 0;
@@ -59,6 +67,9 @@ export class SelectionController {
     // between frames, and stale ids would otherwise leak into hit-tests/render.
     for (const e of this.selected) {
       if (!world.isAlive(e)) this.selected.delete(e);
+    }
+    if (this.selectedBuilding !== null && !world.isAlive(this.selectedBuilding)) {
+      this.selectedBuilding = null;
     }
 
     // Track the live cursor so getDragBox() can report the marquee this frame.
@@ -102,9 +113,10 @@ export class SelectionController {
     }
   }
 
-  /** Clear the whole selection. A hook for the future load/reset path. */
+  /** Clear the whole selection (units + building). */
   clear(): void {
     this.selected.clear();
+    this.selectedBuilding = null;
   }
 
   /**
@@ -132,6 +144,7 @@ export class SelectionController {
     const y1 = Math.max(this.pressY, input.mouseY);
 
     if (!shift) this.selected.clear();
+    this.selectedBuilding = null; // selecting units deselects any building
 
     for (const [e, unit] of world.query(CUnit)) {
       if (unit.owner !== PLAYER_ID) continue;
@@ -168,10 +181,24 @@ export class SelectionController {
     this.lastClickY = input.mouseY;
 
     if (hit === null) {
-      // Click on empty ground: plain click clears; shift-click leaves as-is.
+      // No unit under the cursor — try a building (single-select for its panel).
+      const building = this.pickBuildingAt(input.mouseX, input.mouseY, camera, world);
+      if (building !== null) {
+        this.selected.clear();
+        this.selectedBuilding = building;
+        // A building click is not a unit click — break the double-click chain so
+        // a following unit click isn't misread as a double-click.
+        this.lastClickTime = Number.NEGATIVE_INFINITY;
+        return;
+      }
+      // Empty ground: plain click clears; shift-click leaves the unit set as-is.
       if (!shift) this.selected.clear();
+      this.selectedBuilding = null;
       return;
     }
+
+    // A unit was hit — that deselects any building.
+    this.selectedBuilding = null;
 
     if (isDoubleClick) {
       // Select every on-screen player unit of the same kind. shift => add.
@@ -199,6 +226,16 @@ export class SelectionController {
    * the one drawn on top: greatest tr.y (units lower on the iso plane render in
    * front).
    */
+  /** The building whose footprint contains the cursor tile, or null (any owner). */
+  private pickBuildingAt(cursorX: number, cursorY: number, camera: Camera, world: World): Entity | null {
+    const { wx, wy } = camera.screenToWorld(cursorX, cursorY);
+    const t = worldToTile(wx, wy);
+    for (const [e, b] of world.query(CBuilding)) {
+      if (t.tx >= b.tx && t.tx < b.tx + b.w && t.ty >= b.ty && t.ty < b.ty + b.h) return e;
+    }
+    return null;
+  }
+
   private pickUnitAt(
     cursorX: number,
     cursorY: number,

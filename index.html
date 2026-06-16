@@ -95,12 +95,26 @@
         padding: 8px 12px;
         cursor: pointer;
       }
-      #controls button:hover {
+      #controls button:hover:not(:disabled) {
         background: rgba(40, 54, 68, 0.95);
       }
       #controls button:disabled {
         opacity: 0.45;
         cursor: not-allowed;
+      }
+      #controls .panel-title {
+        font-size: 12px;
+        font-weight: 600;
+        color: #cdd6df;
+        padding: 2px 2px 0;
+        user-select: none;
+      }
+      #controls .panel-hint {
+        font-size: 11px;
+        color: #9aa4ad;
+        padding: 0 2px 2px;
+        max-width: 220px;
+        user-select: none;
       }
       #help {
         position: fixed;
@@ -120,14 +134,12 @@
     <div id="app">
       <canvas id="game"></canvas>
       <div id="resbar"></div>
-      <div id="controls">
-        <button id="train-villager" title="Hotkey: Q">Train Villager (50 F)</button>
-      </div>
+      <div id="controls"></div>
       <div id="hud"></div>
       <div id="help">
-        Select: click / drag-box / double-click &nbsp;•&nbsp; Right-click: move or gather &nbsp;•&nbsp;
-        Q: train villager &nbsp;•&nbsp; Shift: add &nbsp;•&nbsp; WASD / edge / middle-drag: pan &nbsp;•&nbsp;
-        Wheel: zoom &nbsp;•&nbsp; Space: pause &nbsp;•&nbsp; G: grid
+        Select: click / drag-box / double-click &nbsp;•&nbsp; Right-click: move / gather / build
+        &nbsp;•&nbsp; Select a villager to build · a building to train (Q) &nbsp;•&nbsp; Esc: cancel
+        &nbsp;•&nbsp; WASD / edge / middle-drag: pan &nbsp;•&nbsp; Wheel: zoom &nbsp;•&nbsp; Space: pause
       </div>
     </div>
     <script type="module" src="/src/main.ts"></script>

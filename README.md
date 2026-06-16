@@ -21,40 +21,42 @@ Requires Node 18+ (developed on Node 20). A modern desktop browser (Chrome/Safar
 
 ---
 
-## Current status — Phase 2: Economy ✅
+## Current status — Phase 3: Buildings & construction ✅
 
-A working economy loop: gather four resources, drop them at the Town Center, and
-spend food to train more villagers against a house-driven population cap — on top
-of the Phase 0/1 map, units and A\* movement.
+Build a base and an army: place buildings (ghost preview + validity + cost), have
+villagers construct them over time, then use completed buildings — houses raise
+the population cap, the Barracks trains infantry — on top of the Phase 0–2
+economy.
 
 ### Controls
 
 | Input | Action |
 | --- | --- |
-| **Left-click** unit | Select it |
+| **Left-click** unit / building | Select unit, or single-select a building |
 | **Left-drag** a box | Select all your units in the box |
 | **Double-click** unit | Select all on-screen units of that type |
 | **Shift** + click/drag | Add to / toggle current selection |
+| Select a villager → **Build** menu | Pick a building to place |
+| During placement: **left-click** | Place the foundation (Shift = place several) |
+| During placement: **right-click** / `Esc` | Cancel placement |
+| **Right-click** a foundation | Send selected villagers to construct it |
 | **Right-click** a resource | Send selected villagers to gather it |
 | **Right-click** ground | Move selected units there (A\* path) |
-| `Q` or the on-screen button | Train a villager (50 food) at the Town Center |
-| `W` `A` `S` `D` / Arrow keys | Pan camera |
-| Move mouse to screen edge | Edge-scroll pan |
-| Middle-mouse drag | Pan camera (grab) |
-| Mouse wheel | Zoom in/out toward cursor |
-| `Space` | Pause / resume simulation |
-| `G` | Toggle tile grid overlay |
+| Select a building → panel / `Q` | Train its unit (Town Center → villager, Barracks → spearman) |
+| `W` `A` `S` `D` / Arrows / edge / middle-drag | Pan camera · wheel: zoom |
+| `Space` pause · `G` grid · `Esc` clear selection | |
 
-You start with **3 villagers**, a **Town Center** and **2 houses** (pop cap 15),
-plus resource nodes: forests (wood), gold/stone deposits, and berry bushes
-(food). Right-click a tree/bush/mine with villagers selected and they'll gather
-it, haul it back to the Town Center, and the **resource bar** (top) ticks up.
-Spend food to train villagers until you hit the population cap.
+You start with **3 villagers**, a **Town Center** and **2 houses** (pop cap 15).
+Gather wood, select a villager to open the **Build** menu, drop a **House**
+foundation, right-click it to construct it (pop cap rises), then build a
+**Barracks** and train spearmen. Lumber/Mining Camps and a Mill act as nearer
+resource drop-offs.
 
-> **Resources:** food / wood / gold / stone, each node depletes and disappears
-> (chopped forest reopens to grass). Carry capacity 10; the Town Center is the
-> universal drop-off. Building *placement & construction* arrives in Phase 3 —
-> for now the Town Center and houses are pre-placed.
+> **Buildings:** Town Center (3×3, drop-off all, trains villagers), House (2×2,
+> +5 pop), Barracks (3×3, trains spearman), Lumber/Mining Camp & Mill (2×2, nearer
+> drop-offs). A foundation blocks its tiles immediately and is built up by any
+> villagers assigned to it; multiple builders finish faster. Cost is refunded
+> only by not building — there is no cancel-after-place yet.
 
 ---
 
@@ -86,25 +88,27 @@ src/
   systems/
     MovementSystem.ts  Path-following + occupancy-aware separation; stuck-detection.
     GatherSystem.ts    Villager gather state machine (toNode/gathering/toDrop/depositing).
-    EconomySystem.ts   Population recount + Town Center training queues.
+    BuildSystem.ts     Villager construction state machine (toSite/building → complete).
+    EconomySystem.ts   Population recount + building training queues.
   selection/
-    SelectionController.ts  VIEW-state selection: click/box/double-click/shift.
+    SelectionController.ts  VIEW-state selection: units (click/box/double-click) + 1 building.
+  placement/
+    PlacementController.ts  VIEW-state build placement: ghost tile + validity (no mutation).
   render/
     Camera.ts          VIEW state only: world<->screen transform, pan/zoom/clamp.
     Renderer.ts        Canvas 2D context, HiDPI scaling, frame orchestration + overlay hook.
     drawMap.ts         Viewport-culled iso tile drawing.
-    drawUnits.ts       Depth-sorted unit sprites + selection rings.
-    drawResources.ts   Resource-node sprites (trees / bushes / gold / stone).
-    drawBuildings.ts   Isometric building sprites (Town Center, House).
+    drawWorld.ts       ONE depth-sorted pass: resources + buildings + units (+ rings, HP/build bars).
+    drawPlacement.ts   The build placement ghost (green/red footprint).
     colors.ts          Terrain palette.
   input/
     Input.ts           Keyboard/mouse/wheel state, per-frame deltas, edge-scroll.
   game/
-    components.ts      All components + economy constants (plain, JSON-safe).
-    spawn.ts           Factories: unit / resource node / building / player.
+    components.ts      All components + unit/building data tables (plain, JSON-safe).
+    spawn.ts           Factories: unit / resource node / building (foundation) / player.
     economy.ts         Domain helpers: player lookup, drop-off / node search.
     Game.ts            Owns world + map + occupancy + systems + tick; setup; save/load.
-  main.ts              Bootstraps everything; wires loop, input, orders, gather, HUD.
+  main.ts              Bootstraps everything; wires loop, input, orders, placement, HUD/panel.
 ```
 
 ### Key design decisions (and where we diverge from AoE)
@@ -121,8 +125,11 @@ src/
 - **Resource nodes are entities on the terrain.** Forest/gold/stone tiles get a node entity; depleting one removes it and reopens the tile to grass. Food has no terrain, so berry bushes are entity-only sprites. The Town Center is the universal drop-off (Lumber/Mining camps + Mill come with Phase 3 buildings).
 - **Occupancy is derived, not serialized.** Building footprints block tiles via a separate grid that pathfinding/movement consult alongside terrain; it's rebuilt from the building entities on load, so saves stay small and can't drift out of sync.
 - **Group move orders spread across distinct tiles** and a stuck-detector lets crowds settle — a lightweight stand-in for AoE formations.
-- **Divergence — building construction is deferred to Phase 3.** Phase 2 pre-places the Town Center and houses so the *economy loop* is the focus; placement preview + villager-built structures are the next phase. Training is via a hotkey/button rather than a selected-building panel (also Phase 3, once buildings are selectable).
-- **Known limitation — no cross-type iso depth sort yet.** Resources, buildings and units are drawn in separate passes (units depth-sort among themselves), so a unit walking *behind* a pre-placed building can briefly draw in front of it. Purely cosmetic (zero sim impact); it'll be folded into a single depth-keyed draw list when Phase 3 makes buildings dynamic.
+- **Data-driven units & buildings.** `UNIT_STATS` and `BUILDING_DEFS` tables hold footprint/cost/HP/build-time/pop/drop-off/training per kind, so adding a building or unit is a data edit, not new code paths. Unit combat stats (attack/armor/range) are defined now, used in Phase 4.
+- **Construction is its own system + components.** A placed building is a `Building{complete:false}` + `Construction{progress,required}`; villagers carry a `Build` task; `BuildSystem` pours build points in and flips `complete` (removing `Construction`). Incomplete buildings don't provide pop, train, or accept drop-offs.
+- **Placement is pure view state.** `PlacementController` computes the ghost tile + validity (buildable terrain, clear footprint, affordable) and never mutates the world; `main` commits the placement (pay + spawn foundation + block occupancy) as a player command — same view/sim split as selection.
+- **One depth-sorted render pass (carried-over fix, now done).** Resources, buildings and units are merged into a single list keyed by world-Y (buildings by their front-tile centre) and drawn back-to-front, so a unit in front of a building draws in front and one behind is occluded. A single scalar key can't perfectly order against a multi-tile diamond footprint — good enough here; per-row banding is a later refinement if needed.
+- **Divergence — defensive structures & Archery Range deferred.** Phase 3 ships the economy buildings + Barracks/infantry per its deliverable ("build a base and an army"); Walls/Gates/Towers/Archery Range come with the combat/depth phases. There's also no cancel-after-place refund yet.
 
 ### Strictness / quality bar
 
@@ -135,7 +142,7 @@ Full TypeScript strict mode, plus `noUncheckedIndexedAccess`, `exactOptionalProp
 - **Phase 0 — Skeleton** ✅
 - **Phase 1 — Units & movement** ✅ (selection, A* pathfinding, move orders)
 - **Phase 2 — Economy** ✅ (resources, gathering, drop-off, train villagers, pop cap)
-- Phase 3 — Buildings & construction (placement UI, villager-built, Barracks)
+- **Phase 3 — Buildings & construction** ✅ (placement UI, villager-built, Barracks + infantry)
 - Phase 4 — Combat (HP/armor, melee + ranged, projectiles, fog of war)
 - Phase 5 — Enemy AI, win/lose, match setup
 - Phase 6 — Tech tree, ages, minimap, control groups, save/load, audio, balance

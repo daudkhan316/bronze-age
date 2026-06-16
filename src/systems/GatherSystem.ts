@@ -16,6 +16,7 @@ import {
   findNearestNodeOfKind,
   getPlayerState,
   tileRangeToBuilding,
+  approachTileForBuilding,
 } from "@/game/economy";
 import type { GridPoint } from "@/math/iso";
 import { worldToTile } from "@/math/iso";
@@ -162,7 +163,11 @@ export class GatherSystem implements System {
         }
 
         case "toDrop": {
-          const drop = findNearestDropoff(world, owner, tr.x, tr.y);
+          if (g.resourceKind === null) {
+            world.remove(e, CGather);
+            continue;
+          }
+          const drop = findNearestDropoff(world, owner, g.resourceKind, tr.x, tr.y);
           if (drop === null) {
             world.remove(e, CGather); // nowhere to deposit — give up.
             continue;
@@ -173,12 +178,9 @@ export class GatherSystem implements System {
             mv.path.length = 0;
             mv.goal = null;
           } else if (mv.path.length === 0) {
-            const stand = standableTileNear(
-              this.map,
-              drop.building.tx + (drop.building.w >> 1),
-              drop.building.ty + (drop.building.h >> 1),
-              this.occ,
-            );
+            // Walk to a tile on the drop-off's adjacency ring (provably within
+            // INTERACT_RANGE, so arrival lets us deposit).
+            const stand = approachTileForBuilding(this.map, this.occ, drop.building);
             if (stand !== null) {
               mv.path = findPath(this.map, here, stand, this.occ);
               mv.goal = stand;

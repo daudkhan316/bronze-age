@@ -6,11 +6,12 @@ import {
   CUnit,
   CResourceNode,
   CBuilding,
+  CConstruction,
   CPlayer,
   CTrainQueue,
   UNIT_STATS,
   NODE_AMOUNT,
-  BUILDING_SIZE,
+  BUILDING_DEFS,
   type UnitKind,
   type ResourceKind,
   type BuildingKind,
@@ -32,7 +33,7 @@ export function spawnUnit(
   const centre = tileCenterWorld(tx, ty);
   const stats = UNIT_STATS[kind];
   world.add(e, CTransform, { x: centre.x, y: centre.y });
-  world.add(e, CUnit, { kind, owner, radius: stats.radius });
+  world.add(e, CUnit, { kind, owner, radius: stats.radius, hp: stats.hp, maxHp: stats.hp });
   world.add(e, CMovement, { speed: stats.speed, path: [], goal: null, stuck: 0 });
   return e;
 }
@@ -51,22 +52,44 @@ export function spawnResourceNode(
   return e;
 }
 
-/** Create a building with its footprint origin at tile (tx, ty). */
+/**
+ * Create a building with footprint origin at (tx, ty). Pass `foundation: true`
+ * to place it under construction (a BuildSystem completes it as villagers
+ * build); otherwise it spawns complete and functional.
+ */
 export function spawnBuilding(
   world: World,
   kind: BuildingKind,
   owner: number,
   tx: number,
   ty: number,
+  opts?: { foundation?: boolean },
 ): Entity {
   const e = world.createEntity();
-  const { w, h } = BUILDING_SIZE[kind];
+  const def = BUILDING_DEFS[kind];
+  const { w, h } = def;
   // Transform = footprint centre in world space (for rendering).
   const centre = gridToWorld(tx + w / 2, ty + h / 2);
   world.add(e, CTransform, { x: centre.x, y: centre.y });
-  world.add(e, CBuilding, { kind, owner, tx, ty, w, h });
-  // Town Centers can train villagers.
-  if (kind === "town_center") world.add(e, CTrainQueue, { queued: 0, progress: 0 });
+
+  const foundation = opts?.foundation === true && def.buildTicks > 0;
+  world.add(e, CBuilding, {
+    kind,
+    owner,
+    tx,
+    ty,
+    w,
+    h,
+    complete: !foundation,
+    // A foundation starts with a sliver of HP that ramps to maxHp as it builds.
+    hp: foundation ? Math.max(1, Math.round(def.maxHp * 0.05)) : def.maxHp,
+    maxHp: def.maxHp,
+  });
+  if (foundation) {
+    world.add(e, CConstruction, { progress: 0, required: def.buildTicks });
+  }
+  // Trainable buildings get a queue (only used once complete).
+  if (def.trains !== null) world.add(e, CTrainQueue, { queued: 0, progress: 0 });
   return e;
 }
 

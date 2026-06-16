@@ -5,9 +5,9 @@ import {
   CBuilding,
   CPlayer,
   CTrainQueue,
-  POP_PROVIDED,
+  BUILDING_DEFS,
+  UNIT_STATS,
   MAX_POP,
-  VILLAGER_TRAIN_TICKS,
 } from "@/game/components";
 import { getPlayerState } from "@/game/economy";
 import { spawnUnit } from "@/game/spawn";
@@ -65,7 +65,8 @@ export class EconomySystem implements System {
 
     const popCap = new Map<number, number>();
     for (const [, b] of world.query(CBuilding)) {
-      const provided = POP_PROVIDED[b.kind];
+      if (!b.complete) continue; // foundations don't provide pop until built
+      const provided = BUILDING_DEFS[b.kind].pop;
       popCap.set(b.owner, (popCap.get(b.owner) ?? 0) + provided);
     }
 
@@ -89,27 +90,30 @@ export class EconomySystem implements System {
    */
   private processTraining(world: World, popUsed: Map<number, number>): void {
     for (const [e, b] of world.query(CBuilding)) {
-      if (b.kind !== "town_center") continue;
+      if (!b.complete) continue; // foundations can't train
+      const trains = BUILDING_DEFS[b.kind].trains;
+      if (trains === null) continue;
 
       const tq = world.get(e, CTrainQueue);
       if (tq === undefined || tq.queued <= 0) continue;
 
+      const trainTicks = UNIT_STATS[trains].trainTicks;
       const ps = getPlayerState(world, b.owner);
       // popCap is authoritative from the recomputed player state; popUsed is the
-      // live tally so in-tick spawns from sibling Town Centers are counted.
+      // live tally so in-tick spawns from sibling buildings are counted.
       const cap = ps !== undefined ? ps.popCap : 0;
       const used = popUsed.get(b.owner) ?? 0;
 
       tq.progress++;
-      if (tq.progress < VILLAGER_TRAIN_TICKS) continue;
+      if (tq.progress < trainTicks) continue;
 
-      // Pop full: hold the finished villager — clamp (don't keep incrementing).
+      // Pop full: hold the finished unit — clamp (don't keep incrementing).
       if (ps === undefined || used >= cap) {
-        tq.progress = VILLAGER_TRAIN_TICKS;
+        tq.progress = trainTicks;
         continue;
       }
 
-      // Find a free tile beside the footprint centre to drop the new villager.
+      // Find a free tile beside the footprint centre to drop the new unit.
       const spot = standableTileNear(
         this.map,
         b.tx + (b.w >> 1),
@@ -118,15 +122,15 @@ export class EconomySystem implements System {
       );
       // No standable tile right now: leave progress maxed and retry next tick.
       if (spot === null) {
-        tq.progress = VILLAGER_TRAIN_TICKS;
+        tq.progress = trainTicks;
         continue;
       }
 
-      spawnUnit(world, "villager", spot.tx, spot.ty, b.owner);
+      spawnUnit(world, trains, spot.tx, spot.ty, b.owner);
       tq.queued--;
       tq.progress = 0;
-      // Count the new villager locally so a sibling Town Center this same tick
-      // sees the higher popUsed and won't push the player over popCap.
+      // Count the new unit locally so a sibling building this same tick sees the
+      // higher popUsed and won't push the player over popCap.
       popUsed.set(b.owner, used + 1);
     }
   }

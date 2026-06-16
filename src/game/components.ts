@@ -35,7 +35,7 @@ export interface Movement {
   stuck: number;
 }
 
-export type UnitKind = "villager";
+export type UnitKind = "villager" | "spearman";
 
 /** Marks an entity as a unit (selectable, commandable, collidable). */
 export interface Unit {
@@ -44,6 +44,9 @@ export interface Unit {
   owner: number;
   /** Collision/selection radius in world units. */
   radius: number;
+  /** Current / max hit points (combat lands in Phase 4; HP shown now). */
+  hp: number;
+  maxHp: number;
 }
 
 export const CTransform = defineComponent<Transform>("Transform");
@@ -53,9 +56,37 @@ export const CUnit = defineComponent<Unit>("Unit");
 /** The human player's id. Only owner-0 units are player-selectable. */
 export const PLAYER_ID = 0;
 
-/** Per-unit-kind base stats. Extended heavily in later phases. */
-export const UNIT_STATS: Record<UnitKind, { speed: number; radius: number }> = {
-  villager: { speed: 55, radius: 11 },
+/**
+ * Per-unit-kind definition: movement, HP, (Phase 4) combat stats, and training
+ * cost. `trainedAt` ties a unit to the building kind that produces it.
+ */
+export interface UnitDef {
+  speed: number;
+  radius: number;
+  hp: number;
+  attack: number;
+  armor: number;
+  pierceArmor: number;
+  /** Attack range in tiles; 0 = melee. */
+  range: number;
+  /** Seconds between attacks. */
+  attackCooldown: number;
+  cost: Partial<Record<ResourceKind, number>>;
+  trainTicks: number;
+  trainedAt: BuildingKind;
+}
+
+export const UNIT_STATS: Record<UnitKind, UnitDef> = {
+  villager: {
+    speed: 55, radius: 11, hp: 25,
+    attack: 3, armor: 0, pierceArmor: 0, range: 0, attackCooldown: 2,
+    cost: { food: 50 }, trainTicks: 40, trainedAt: "town_center",
+  },
+  spearman: {
+    speed: 50, radius: 11, hp: 45,
+    attack: 6, armor: 0, pierceArmor: 0, range: 0, attackCooldown: 2,
+    cost: { food: 35, wood: 25 }, trainTicks: 55, trainedAt: "barracks",
+  },
 };
 
 // ---------------------------------------------------------------------------
@@ -79,12 +110,18 @@ export interface ResourceNode {
   ty: number;
 }
 
-export type BuildingKind = "town_center" | "house";
+export type BuildingKind =
+  | "town_center"
+  | "house"
+  | "barracks"
+  | "lumber_camp"
+  | "mining_camp"
+  | "mill";
 
 /**
- * A placed building. Occupies a `w`×`h` block of tiles with origin (tx,ty).
- * Town Centers are resource drop-off points and train villagers; Houses add
- * population headroom.
+ * A placed building, occupying a `w`×`h` block of tiles with origin (tx,ty).
+ * While `complete` is false it's a foundation under construction — it does NOT
+ * provide population, train units, or accept drop-offs until built.
  */
 export interface Building {
   kind: BuildingKind;
@@ -94,6 +131,25 @@ export interface Building {
   ty: number;
   w: number;
   h: number;
+  complete: boolean;
+  hp: number;
+  maxHp: number;
+}
+
+/** Construction progress on a foundation (driven by BuildSystem). */
+export interface Construction {
+  /** Build points accumulated. */
+  progress: number;
+  /** Build points required to finish (= the kind's buildTicks). */
+  required: number;
+}
+
+/** Villager construction task (driven by BuildSystem). */
+export type BuildState = "toSite" | "building";
+export interface Build {
+  /** Target foundation entity. */
+  target: number;
+  state: BuildState;
 }
 
 /** Villager economy task + carry state (driven by GatherSystem). */
@@ -130,6 +186,8 @@ export interface TrainQueue {
 
 export const CResourceNode = defineComponent<ResourceNode>("ResourceNode");
 export const CBuilding = defineComponent<Building>("Building");
+export const CConstruction = defineComponent<Construction>("Construction");
+export const CBuild = defineComponent<Build>("Build");
 export const CGather = defineComponent<Gather>("Gather");
 export const CPlayer = defineComponent<PlayerState>("Player");
 export const CTrainQueue = defineComponent<TrainQueue>("TrainQueue");
@@ -152,20 +210,45 @@ export const NODE_AMOUNT: Record<ResourceKind, number> = {
 /** When a node depletes, a gatherer looks this many tiles out for another of its kind. */
 export const NODE_SEARCH_RADIUS = 8;
 
-export const BUILDING_SIZE: Record<BuildingKind, { w: number; h: number }> = {
-  town_center: { w: 3, h: 3 },
-  house: { w: 2, h: 2 },
+/**
+ * Per-building-kind definition: footprint, cost, build time, hit points, the
+ * population it provides (when complete), the resources it accepts as a
+ * drop-off, and the unit it trains (if any).
+ */
+export interface BuildingDef {
+  w: number;
+  h: number;
+  cost: Partial<Record<ResourceKind, number>>;
+  /** Build points to construct (one builder adds 1 per tick). 0 = pre-built. */
+  buildTicks: number;
+  maxHp: number;
+  /** Population headroom provided when complete. */
+  pop: number;
+  /** Resource kinds accepted as a drop-off when complete. */
+  accepts: readonly ResourceKind[];
+  /** Unit kind this building trains when complete, or null. */
+  trains: UnitKind | null;
+  label: string;
+}
+
+export const BUILDING_DEFS: Record<BuildingKind, BuildingDef> = {
+  town_center: { w: 3, h: 3, cost: {}, buildTicks: 0, maxHp: 600, pop: 5, accepts: ["food", "wood", "gold", "stone"], trains: "villager", label: "Town Center" },
+  house: { w: 2, h: 2, cost: { wood: 30 }, buildTicks: 50, maxHp: 200, pop: 5, accepts: [], trains: null, label: "House" },
+  barracks: { w: 3, h: 3, cost: { wood: 120 }, buildTicks: 120, maxHp: 500, pop: 0, accepts: [], trains: "spearman", label: "Barracks" },
+  lumber_camp: { w: 2, h: 2, cost: { wood: 80 }, buildTicks: 35, maxHp: 300, pop: 0, accepts: ["wood"], trains: null, label: "Lumber Camp" },
+  mining_camp: { w: 2, h: 2, cost: { wood: 80 }, buildTicks: 35, maxHp: 300, pop: 0, accepts: ["gold", "stone"], trains: null, label: "Mining Camp" },
+  mill: { w: 2, h: 2, cost: { wood: 80 }, buildTicks: 35, maxHp: 300, pop: 0, accepts: ["food"], trains: null, label: "Mill" },
 };
 
-/** Population headroom each building contributes. */
-export const POP_PROVIDED: Record<BuildingKind, number> = {
-  town_center: 5,
-  house: 5,
-};
-
-/** Cost to train a villager (food only, AoE-style). */
-export const VILLAGER_COST: Partial<Record<ResourceKind, number>> = { food: 50 };
-/** Ticks to train one villager (≈2s @20Hz). */
-export const VILLAGER_TRAIN_TICKS = 40;
+/** Build points one builder contributes per second (× dt per tick). */
+export const BUILD_RATE = 20;
+/** Building kinds the player can place (the Town Center is the pre-placed start). */
+export const BUILDABLE_KINDS: readonly BuildingKind[] = [
+  "house",
+  "barracks",
+  "lumber_camp",
+  "mining_camp",
+  "mill",
+];
 /** Hard population ceiling regardless of houses. */
 export const MAX_POP = 200;
