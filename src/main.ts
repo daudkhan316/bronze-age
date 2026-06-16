@@ -3,7 +3,6 @@ import {
   EDGE_SCROLL_MARGIN,
   ZOOM_STEP,
   WHEEL_NOTCH_PX,
-  DEFAULT_SEED,
 } from "@/config";
 import { Loop } from "@/core/Loop";
 import { Game } from "@/game/Game";
@@ -14,17 +13,13 @@ import { normalize } from "@/math/Vec2";
 import { worldToTile } from "@/math/iso";
 import { SelectionController } from "@/selection/SelectionController";
 import { PlacementController } from "@/placement/PlacementController";
+import { Lobby } from "@/ui/Lobby";
 import { drawWorld } from "@/render/drawWorld";
 import { drawFog } from "@/render/drawFog";
 import { drawPlacementGhost } from "@/render/drawPlacement";
-import { findPath, canStand } from "@/pathfinding/astar";
 import {
-  CMovement,
-  CTransform,
   CUnit,
-  CGather,
-  CBuild,
-  CCombat,
+  CTransform,
   CBuilding,
   CTrainQueue,
   PLAYER_ID,
@@ -35,49 +30,111 @@ import {
   type ResourceKind,
   type BuildingKind,
 } from "@/game/components";
-import { spawnBuilding } from "@/game/spawn";
-import { getPlayerState, resourceNodeAtTile } from "@/game/economy";
-import { spawnUnit } from "@/game/spawn";
+import { getPlayerState, getMatchState, resourceNodeAtTile } from "@/game/economy";
+import { spawnUnit, spawnBuilding } from "@/game/spawn";
+import type { MatchConfig } from "@/game/match";
 import type { GridPoint } from "@/math/iso";
 import type { Entity } from "@/ecs/types";
 
 const canvasEl = document.getElementById("game");
 const hudEl = document.getElementById("hud");
-if (!(canvasEl instanceof HTMLCanvasElement) || hudEl === null) {
-  throw new Error("Bootstrap: #game canvas or #hud element missing");
+const menuEl = document.getElementById("menu");
+const gameoverEl = document.getElementById("gameover");
+if (
+  !(canvasEl instanceof HTMLCanvasElement) ||
+  hudEl === null ||
+  !(menuEl instanceof HTMLElement) ||
+  !(gameoverEl instanceof HTMLElement)
+) {
+  throw new Error("Bootstrap: a required DOM element (#game/#hud/#menu/#gameover) is missing");
 }
 const canvas: HTMLCanvasElement = canvasEl;
 const hud: HTMLElement = hudEl;
+const menu: HTMLElement = menuEl;
+const gameover: HTMLElement = gameoverEl;
 const resbar = document.getElementById("resbar");
 const controls = document.getElementById("controls");
 
+// Persistent across matches: renderer + raw input + the lobby.
 const renderer = new Renderer(canvas);
-const camera = new Camera();
 const input = new Input(canvas);
-const game = new Game(DEFAULT_SEED);
-const selection = new SelectionController();
-const placement = new PlacementController();
+const lobby = new Lobby(menu, startMatch);
 
-// Start centred on the map.
-const center = game.centerWorld();
-camera.x = center.x;
-camera.y = center.y;
+/** Per-match state. Null while in the menu. Rebuilt on each Start. */
+interface Session {
+  game: Game;
+  camera: Camera;
+  selection: SelectionController;
+  placement: PlacementController;
+  /** Attack-move cursor: armed by `F`, consumed by the next left-click. */
+  attackMoveArmed: boolean;
+}
+let session: Session | null = null;
+let appState: "menu" | "playing" | "gameover" = "menu";
 
 let showGrid = false;
 let fps = 0;
-/** Attack-move cursor: armed by `F`, consumed by the next left-click. */
-let attackMoveArmed = false;
 
 function syncViewport(): void {
   renderer.resize();
-  camera.setViewport(renderer.cssWidth, renderer.cssHeight);
+  if (session !== null) session.camera.setViewport(renderer.cssWidth, renderer.cssHeight);
 }
 syncViewport();
 window.addEventListener("resize", syncViewport);
 
+// --- match lifecycle -------------------------------------------------------
+
+/** Build a fresh match from the lobby config and switch to play. */
+function startMatch(config: MatchConfig): void {
+  const game = new Game(config);
+  const camera = new Camera();
+  camera.setViewport(renderer.cssWidth, renderer.cssHeight);
+  const start = game.playerCenterWorld(PLAYER_ID);
+  camera.x = start.x;
+  camera.y = start.y;
+  const b = game.worldBounds();
+  camera.clampToBounds(b.minX, b.minY, b.maxX, b.maxY);
+
+  session = {
+    game,
+    camera,
+    selection: new SelectionController(),
+    placement: new PlacementController(),
+    attackMoveArmed: false,
+  };
+  lobby.hide();
+  gameover.hidden = true;
+  appState = "playing";
+  if (loop.paused) loop.togglePause();
+  exposeDebug(session);
+}
+
+/** Show the victory/defeat screen (the final frame stays behind it). */
+function endMatch(winner: number | null): void {
+  appState = "gameover";
+  const won = winner === PLAYER_ID;
+  gameover.innerHTML =
+    `<div class="panel">` +
+    `<h1 class="${won ? "win" : "lose"}">${won ? "Victory" : "Defeat"}</h1>` +
+    `<p class="sub">${won ? "The enemy has been wiped out." : "Your civilization has fallen."}</p>` +
+    `<button class="primary" data-action="again">Play again</button>` +
+    `</div>`;
+  const again = gameover.querySelector('[data-action="again"]');
+  if (again instanceof HTMLButtonElement) again.addEventListener("click", backToMenu);
+  gameover.hidden = false;
+}
+
+/** Tear the match down and return to the lobby. */
+function backToMenu(): void {
+  session = null;
+  appState = "menu";
+  gameover.hidden = true;
+  lobby.show();
+}
+
 /** Update camera from input. Runs at render framerate for smooth panning. */
-function updateCamera(frameDt: number): void {
-  // Keyboard + edge-scroll pan direction (screen-aligned world axes).
+function updateCamera(s: Session, frameDt: number): void {
+  const camera = s.camera;
   let dx = 0;
   let dy = 0;
   if (input.isKeyDown("KeyW") || input.isKeyDown("ArrowUp")) dy -= 1;
@@ -94,39 +151,34 @@ function updateCamera(frameDt: number): void {
 
   if (dx !== 0 || dy !== 0) {
     const dir = normalize({ x: dx, y: dy });
-    // Divide by zoom so pan feels the same speed on screen at any zoom.
     const amount = (PAN_SPEED * frameDt) / camera.zoom;
     camera.panByWorld(dir.x * amount, dir.y * amount);
   }
 
-  // Middle-mouse drag pan: content follows the cursor.
   const drag = input.consumeDrag();
-  if (drag.x !== 0 || drag.y !== 0) {
-    camera.panByScreen(-drag.x, -drag.y);
-  }
+  if (drag.x !== 0 || drag.y !== 0) camera.panByScreen(-drag.x, -drag.y);
 
-  // Wheel zoom toward the cursor. ~100 deltaY per notch; up = zoom in.
   const wheel = input.consumeWheel();
   if (wheel !== 0) {
     const factor = Math.pow(ZOOM_STEP, -wheel / WHEEL_NOTCH_PX);
     camera.zoomAt(input.mouseX, input.mouseY, factor);
   }
 
-  const b = game.worldBounds();
+  const b = s.game.worldBounds();
   camera.clampToBounds(b.minX, b.minY, b.maxX, b.maxY);
 }
 
-function updateHud(): void {
-  const { wx, wy } = camera.screenToWorld(input.mouseX, input.mouseY);
+function updateHud(s: Session): void {
+  const { wx, wy } = s.camera.screenToWorld(input.mouseX, input.mouseY);
   const { tx, ty } = worldToTile(wx, wy);
-  const onMap = game.map.inBounds(tx, ty);
-  const tile = onMap ? game.map.get(tx, ty) : "—";
+  const onMap = s.game.map.inBounds(tx, ty);
+  const tile = onMap ? s.game.map.get(tx, ty) : "—";
   hud.textContent =
-    `Bronze Age — Phase 4\n` +
+    `Bronze Age — Phase 5\n` +
     `fps   ${fps.toFixed(0)}\n` +
-    `tick  ${game.tick}${loop.paused ? "  [PAUSED]" : ""}\n` +
-    `zoom  ${camera.zoom.toFixed(2)}x\n` +
-    `sel   ${selection.selected.size} unit(s)\n` +
+    `tick  ${s.game.tick}${loop.paused ? "  [PAUSED]" : ""}\n` +
+    `zoom  ${s.camera.zoom.toFixed(2)}x\n` +
+    `sel   ${s.selection.selected.size} unit(s)\n` +
     `tile  ${onMap ? `${tx},${ty} (${tile})` : "off-map"}\n` +
     `grid  ${showGrid ? "on" : "off"}` +
     (loop.droppedTicks > 0 ? `\ndrop  ${loop.droppedTicks}` : "");
@@ -139,10 +191,10 @@ const RESOURCE_COLORS: Record<ResourceKind, string> = {
   stone: "#9aa0a6",
 };
 
-/** Refresh the top resource bar and the train button's enabled state. */
-function updateResbar(): void {
+/** Refresh the top resource bar from the human player's economy. */
+function updateResbar(s: Session): void {
   if (!(resbar instanceof HTMLElement)) return;
-  const p = getPlayerState(game.world, PLAYER_ID);
+  const p = getPlayerState(s.game.world, PLAYER_ID);
   if (p === undefined) {
     resbar.textContent = "";
     return;
@@ -164,66 +216,68 @@ const MARQUEE_FILL = "rgba(120, 200, 255, 0.12)";
 const MARQUEE_STROKE = "rgba(170, 220, 255, 0.9)";
 
 /**
- * Collect up to `count` distinct walkable tiles near `center`, scanning in
- * outward rings. Used to spread a group order so units don't all contend for a
- * single destination tile (which would make the ones that can't fit jitter
- * against it forever) — a lightweight stand-in for AoE-style formations.
+ * Right-click: enemy → attack, own foundation → build, resource → gather, else
+ * a spread move order. Each branch ENQUEUES a command (applied on the next tick).
  */
-function collectDestinations(center: GridPoint, count: number): GridPoint[] {
-  const out: GridPoint[] = [];
-  for (let r = 0; r <= 24 && out.length < count; r++) {
-    for (let dy = -r; dy <= r && out.length < count; dy++) {
-      for (let dx = -r; dx <= r && out.length < count; dx++) {
-        if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue; // current ring
-        const tx = center.tx + dx;
-        const ty = center.ty + dy;
-        if (canStand(game.map, tx, ty, game.occ)) out.push({ tx, ty });
-      }
+function issueRightClick(s: Session): void {
+  const { wx, wy } = s.camera.screenToWorld(input.mouseX, input.mouseY);
+  const tile = worldToTile(wx, wy);
+  if (!s.game.map.inBounds(tile.tx, tile.ty)) return;
+
+  const units = selectedPlayerUnits(s);
+  if (units.length === 0) return;
+
+  const enemy = enemyAtTile(s, tile.tx, tile.ty);
+  if (enemy !== null) {
+    s.game.commands.enqueue({ type: "attack", owner: PLAYER_ID, units, target: enemy });
+    return;
+  }
+  const foundation = foundationAtTile(s, tile.tx, tile.ty);
+  if (foundation !== null) {
+    const villagers = units.filter((e) => unitKind(s, e) === "villager");
+    if (villagers.length > 0) {
+      s.game.commands.enqueue({ type: "assignBuild", owner: PLAYER_ID, villagers, target: foundation });
     }
+    return;
+  }
+  const node = resourceNodeAtTile(s.game.world, tile.tx, tile.ty);
+  if (node !== null) {
+    const villagers = units.filter((e) => unitKind(s, e) === "villager");
+    if (villagers.length > 0) {
+      s.game.commands.enqueue({ type: "gather", owner: PLAYER_ID, units: villagers, node: node.entity });
+    }
+  } else {
+    s.game.commands.enqueue({ type: "move", owner: PLAYER_ID, units, tx: tile.tx, ty: tile.ty });
+  }
+}
+
+/** Selected entities that are the human player's living units (in selection order). */
+function selectedPlayerUnits(s: Session): Entity[] {
+  const out: Entity[] = [];
+  for (const e of s.selection.selected) {
+    const u = s.game.world.get(e, CUnit);
+    if (u !== undefined && u.owner === PLAYER_ID) out.push(e);
   }
   return out;
 }
 
-/**
- * Right-click: if the clicked tile holds a resource node, send selected
- * villagers to gather it; otherwise issue a spread move order.
- */
-function issueRightClick(): void {
-  const { wx, wy } = camera.screenToWorld(input.mouseX, input.mouseY);
-  const tile = worldToTile(wx, wy);
-  if (!game.map.inBounds(tile.tx, tile.ty)) return;
-
-  const enemy = enemyAtTile(tile.tx, tile.ty);
-  if (enemy !== null) {
-    assignAttack(enemy);
-    return;
-  }
-  const foundation = foundationAtTile(tile.tx, tile.ty);
-  if (foundation !== null) {
-    assignBuild(foundation);
-    return;
-  }
-  const node = resourceNodeAtTile(game.world, tile.tx, tile.ty);
-  if (node !== null) {
-    assignGather(node.entity, node.node.kind);
-  } else {
-    issueMove(tile);
-  }
+function unitKind(s: Session, e: Entity): string | undefined {
+  return s.game.world.get(e, CUnit)?.kind;
 }
 
-/** Enemy unit on tile (tx,ty), or enemy building whose footprint covers it; else null. */
-function enemyAtTile(tx: number, ty: number): Entity | null {
+/** Enemy unit on tile (fog-gated to currently visible), or enemy building whose
+ *  footprint covers it (targetable once explored); else null. */
+function enemyAtTile(s: Session, tx: number, ty: number): Entity | null {
+  const { game } = s;
   for (const [e, u] of game.world.query(CUnit)) {
     if (u.owner === PLAYER_ID) continue;
-    const tr = game.world.get(e, CTransform);
-    if (tr === undefined) continue;
-    const t = worldToTile(tr.x, tr.y);
-    // Only target an enemy unit the player can actually see (currently in sight).
+    const pos = game.world.get(e, CTransform);
+    if (pos === undefined) continue;
+    const t = worldToTile(pos.x, pos.y);
     if (t.tx === tx && t.ty === ty && game.fog.isVisible(tx, ty)) return e;
   }
   for (const [e, b] of game.world.query(CBuilding)) {
     if (b.owner === PLAYER_ID) continue;
-    // Enemy buildings are remembered: targetable once their tile is explored.
     if (tx >= b.tx && tx < b.tx + b.w && ty >= b.ty && ty < b.ty + b.h && game.fog.isExplored(tx, ty)) {
       return e;
     }
@@ -231,130 +285,28 @@ function enemyAtTile(tx: number, ty: number): Entity | null {
   return null;
 }
 
-/** Order every selected player unit to attack `target` (CombatSystem chases it). */
-function assignAttack(target: Entity): void {
-  for (const e of selection.selected) {
-    const unit = game.world.get(e, CUnit);
-    const cb = game.world.get(e, CCombat);
-    const mv = game.world.get(e, CMovement);
-    if (unit === undefined || cb === undefined || mv === undefined || unit.owner !== PLAYER_ID) continue;
-    cancelTasks(e, mv);
-    cb.target = target;
-    cb.ordered = true;
-    cb.attackMove = null;
-  }
-}
-
-/** Order selected player units to attack-move toward a tile. */
-function issueAttackMove(goal: GridPoint): void {
-  for (const e of selection.selected) {
-    const unit = game.world.get(e, CUnit);
-    const cb = game.world.get(e, CCombat);
-    const mv = game.world.get(e, CMovement);
-    if (unit === undefined || cb === undefined || mv === undefined || unit.owner !== PLAYER_ID) continue;
-    cancelTasks(e, mv);
-    cb.target = null;
-    cb.ordered = false;
-    cb.attackMove = goal;
-  }
-}
-
-/** Clear a unit's gather/build tasks and current path (shared by all order types). */
-function cancelTasks(e: Entity, mv: { path: GridPoint[]; goal: GridPoint | null; stuck: number }): void {
-  mv.path = [];
-  mv.goal = null;
-  mv.stuck = 0;
-  if (game.world.has(e, CGather)) game.world.remove(e, CGather);
-  if (game.world.has(e, CBuild)) game.world.remove(e, CBuild);
-}
-
-/** Clear a unit's combat order (target + attack-move) — a manual order overrides it. */
-function clearCombatOrder(e: Entity): void {
-  const cb = game.world.get(e, CCombat);
-  if (cb !== undefined) {
-    cb.target = null;
-    cb.ordered = false;
-    cb.attackMove = null;
-  }
+/** Issue an attack-move to a tile for the current selection. */
+function issueAttackMove(s: Session, goal: GridPoint): void {
+  const units = selectedPlayerUnits(s);
+  if (units.length === 0) return;
+  s.game.commands.enqueue({ type: "attackMove", owner: PLAYER_ID, units, tx: goal.tx, ty: goal.ty });
 }
 
 /** True if the player has at least one of their own units selected. */
-function hasSelectedUnit(): boolean {
-  for (const e of selection.selected) {
-    const u = game.world.get(e, CUnit);
-    if (u !== undefined && u.owner === PLAYER_ID) return true;
-  }
-  return false;
-}
-
-/** Assign every selected player villager to gather the given resource node. */
-function assignGather(node: Entity, kind: ResourceKind): void {
-  for (const e of selection.selected) {
-    const unit = game.world.get(e, CUnit);
-    const mv = game.world.get(e, CMovement);
-    if (unit === undefined || mv === undefined || unit.owner !== PLAYER_ID) continue;
-    if (unit.kind !== "villager") continue; // only villagers gather
-    // Hand control to GatherSystem: clear any current walk / build task.
-    mv.path = [];
-    mv.goal = null;
-    mv.stuck = 0;
-    if (game.world.has(e, CBuild)) game.world.remove(e, CBuild);
-    clearCombatOrder(e);
-    const existing = game.world.get(e, CGather);
-    if (existing !== undefined) {
-      existing.node = node;
-      existing.resourceKind = kind;
-      existing.carrying = 0;
-      existing.state = "toNode";
-    } else {
-      game.world.add(e, CGather, { node, resourceKind: kind, carrying: 0, state: "toNode" });
-    }
-  }
-}
-
-/** Spread selected units onto distinct standable tiles near `goal` and walk there. */
-function issueMove(goal: GridPoint): void {
-  const units = [...selection.selected];
-  const dests = collectDestinations(goal, units.length);
-
-  for (let i = 0; i < units.length; i++) {
-    const e = units[i];
-    if (e === undefined) continue;
-    const tr = game.world.get(e, CTransform);
-    const mv = game.world.get(e, CMovement);
-    if (tr === undefined || mv === undefined) continue;
-
-    // A manual move cancels any gathering / building / combat order.
-    if (game.world.has(e, CGather)) game.world.remove(e, CGather);
-    if (game.world.has(e, CBuild)) game.world.remove(e, CBuild);
-    clearCombatOrder(e);
-
-    const dest = dests[i] ?? goal;
-    const start = worldToTile(tr.x, tr.y);
-    const path = findPath(game.map, start, dest, game.occ);
-    mv.path = path;
-    // findPath may retarget a blocked goal; the real destination is the last tile.
-    mv.goal = path.length > 0 ? (path[path.length - 1] ?? null) : null;
-  }
+function hasSelectedUnit(s: Session): boolean {
+  return selectedPlayerUnits(s).length > 0;
 }
 
 type Cost = Partial<Record<ResourceKind, number>>;
 
-/** Can the human player afford `cost`? */
-function canAfford(cost: Cost): boolean {
-  const p = getPlayerState(game.world, PLAYER_ID);
+/** Can the human player afford `cost`? (UI gating only; the executor re-checks.) */
+function canAfford(s: Session, cost: Cost): boolean {
+  const p = getPlayerState(s.game.world, PLAYER_ID);
   if (p === undefined) return false;
   for (const k of RESOURCE_KINDS) {
     if ((cost[k] ?? 0) > p[k]) return false;
   }
   return true;
-}
-
-/** Deduct `cost` from the human player's resources (assumes affordability). */
-function payCost(cost: Cost): void {
-  const p = getPlayerState(game.world, PLAYER_ID);
-  if (p === undefined) return;
-  for (const k of RESOURCE_KINDS) p[k] -= cost[k] ?? 0;
 }
 
 /** Compact cost label like "120 W" or "35 F 25 W". */
@@ -368,87 +320,62 @@ function costLabel(cost: Cost): string {
   return parts.length > 0 ? parts.join(" ") : "free";
 }
 
-/** Total units queued across all of a player's training buildings. */
-function queuedForPlayer(owner: number): number {
+/** Total units queued across all of the player's training buildings. */
+function queuedForPlayer(s: Session): number {
   let total = 0;
-  for (const [e, b] of game.world.query(CBuilding)) {
-    if (b.owner !== owner) continue;
-    const tq = game.world.get(e, CTrainQueue);
+  for (const [e, b] of s.game.world.query(CBuilding)) {
+    if (b.owner !== PLAYER_ID) continue;
+    const tq = s.game.world.get(e, CTrainQueue);
     if (tq !== undefined) total += tq.queued;
   }
   return total;
 }
 
-/** Queue a unit at the currently-selected building, if affordable and pop allows. */
-function trainFromSelectedBuilding(): void {
-  const be = selection.selectedBuilding;
+/** Enqueue a train command at the currently-selected building (if it allows). */
+function trainFromSelectedBuilding(s: Session): void {
+  const be = s.selection.selectedBuilding;
   if (be === null) return;
-  const b = game.world.get(be, CBuilding);
+  const b = s.game.world.get(be, CBuilding);
   if (b === undefined || b.owner !== PLAYER_ID || !b.complete) return;
   const trains = BUILDING_DEFS[b.kind].trains;
   if (trains === null) return;
-  const tq = game.world.get(be, CTrainQueue);
-  const player = getPlayerState(game.world, PLAYER_ID);
-  if (tq === undefined || player === undefined) return;
-
+  const player = getPlayerState(s.game.world, PLAYER_ID);
+  if (player === undefined) return;
   const cost = UNIT_STATS[trains].cost;
-  // Pop is gated on used + already-queued so we never pre-pay (cost is non-refundable).
-  if (!canAfford(cost) || player.popUsed + queuedForPlayer(PLAYER_ID) >= player.popCap) return;
-  payCost(cost);
-  tq.queued += 1;
+  if (!canAfford(s, cost) || player.popUsed + queuedForPlayer(s) >= player.popCap) return;
+  s.game.commands.enqueue({ type: "train", owner: PLAYER_ID, building: be, unit: trains });
 }
 
 /** The own incomplete building (foundation) covering tile (tx,ty), or null. */
-function foundationAtTile(tx: number, ty: number): Entity | null {
-  for (const [e, b] of game.world.query(CBuilding)) {
+function foundationAtTile(s: Session, tx: number, ty: number): Entity | null {
+  for (const [e, b] of s.game.world.query(CBuilding)) {
     if (b.owner !== PLAYER_ID || b.complete) continue;
     if (tx >= b.tx && tx < b.tx + b.w && ty >= b.ty && ty < b.ty + b.h) return e;
   }
   return null;
 }
 
-/** Assign every selected villager to construct the given foundation. */
-function assignBuild(target: Entity): void {
-  for (const e of selection.selected) {
-    const unit = game.world.get(e, CUnit);
-    const mv = game.world.get(e, CMovement);
-    if (unit === undefined || mv === undefined || unit.owner !== PLAYER_ID) continue;
-    if (unit.kind !== "villager") continue; // only villagers build
-    mv.path = [];
-    mv.goal = null;
-    mv.stuck = 0;
-    if (game.world.has(e, CGather)) game.world.remove(e, CGather);
-    clearCombatOrder(e);
-    const existing = game.world.get(e, CBuild);
-    if (existing !== undefined) {
-      existing.target = target;
-      existing.state = "toSite";
-    } else {
-      game.world.add(e, CBuild, { target, state: "toSite" });
-    }
-  }
-}
-
-/** Commit the current placement ghost: pay, spawn a foundation, block its tiles. */
-function placeBuildingAtGhost(): boolean {
-  const ghost = placement.getGhost();
+/** Commit the placement ghost: enqueue a build command (executor pays + spawns). */
+function placeBuildingAtGhost(s: Session): boolean {
+  const ghost = s.placement.getGhost();
   if (ghost === null || !ghost.valid) return false;
-  const def = BUILDING_DEFS[ghost.kind];
-  if (!canAfford(def.cost)) return false;
-  payCost(def.cost);
-  const e = spawnBuilding(game.world, ghost.kind, PLAYER_ID, ghost.tx, ghost.ty, { foundation: true });
-  const b = game.world.get(e, CBuilding);
-  if (b !== undefined) game.setBuildingOccupancy(b, true);
+  s.game.commands.enqueue({
+    type: "build",
+    owner: PLAYER_ID,
+    kind: ghost.kind,
+    tx: ghost.tx,
+    ty: ghost.ty,
+    builders: [],
+  });
   return true;
 }
 
 /** Game layers over the terrain: depth-sorted world, marquee, placement ghost. */
-function drawOverlay(ctx: CanvasRenderingContext2D): void {
-  drawWorld(ctx, camera, game.world, selection.selected, selection.selectedBuilding, game.fog);
-  // Fog veil sits over the world but under the selection/placement UI.
-  drawFog(ctx, camera, game.fog);
+function drawOverlay(s: Session, ctx: CanvasRenderingContext2D): void {
+  drawWorld(ctx, s.camera, s.game.world, s.selection.selected, s.selection.selectedBuilding, s.game.fog);
+  drawFog(ctx, s.camera, s.game.fog);
 
-  const box = selection.getDragBox();
+  const box = s.selection.getDragBox();
   if (box !== null) {
     ctx.save();
     ctx.fillStyle = MARQUEE_FILL;
@@ -459,39 +386,34 @@ function drawOverlay(ctx: CanvasRenderingContext2D): void {
     ctx.restore();
   }
 
-  // Placement ghost sits on top of everything.
-  drawPlacementGhost(ctx, camera, placement.getGhost());
+  drawPlacementGhost(ctx, s.camera, s.placement.getGhost());
 }
 
 /** True if the player has at least one of their own villagers selected. */
-function hasSelectedVillager(): boolean {
-  for (const e of selection.selected) {
-    const u = game.world.get(e, CUnit);
-    if (u !== undefined && u.owner === PLAYER_ID && u.kind === "villager") return true;
-  }
-  return false;
+function hasSelectedVillager(s: Session): boolean {
+  return selectedPlayerUnits(s).some((e) => unitKind(s, e) === "villager");
 }
 
 let lastPanelHtml = "";
 
 /** Rebuild the context command panel from the current selection / placement. */
-function updatePanel(): void {
+function updatePanel(s: Session): void {
   if (!(controls instanceof HTMLElement)) return;
   let html = "";
 
-  if (attackMoveArmed) {
+  if (s.attackMoveArmed) {
     html =
       `<div class="panel-title">Attack-move</div>` +
       `<div class="panel-hint">Left-click a destination · Right-click / Esc to cancel</div>`;
-  } else if (placement.isActive()) {
-    const kind = placement.pendingKind();
+  } else if (s.placement.isActive()) {
+    const kind = s.placement.pendingKind();
     const label = kind !== null ? BUILDING_DEFS[kind].label : "";
     html =
       `<div class="panel-title">Placing: ${label}</div>` +
       `<div class="panel-hint">Left-click to place · Right-click / Esc to cancel</div>` +
       `<button data-action="cancel-place">Cancel</button>`;
-  } else if (selection.selectedBuilding !== null) {
-    const b = game.world.get(selection.selectedBuilding, CBuilding);
+  } else if (s.selection.selectedBuilding !== null) {
+    const b = s.game.world.get(s.selection.selectedBuilding, CBuilding);
     if (b !== undefined) {
       const def = BUILDING_DEFS[b.kind];
       html = `<div class="panel-title">${def.label}${b.complete ? "" : " — building…"}</div>`;
@@ -499,15 +421,15 @@ function updatePanel(): void {
         const ukind = def.trains;
         const ucost = UNIT_STATS[ukind].cost;
         const ulabel = ukind.charAt(0).toUpperCase() + ukind.slice(1);
-        const disabled = canAfford(ucost) ? "" : "disabled";
+        const disabled = canAfford(s, ucost) ? "" : "disabled";
         html += `<button data-action="train" ${disabled}>Train ${ulabel} (${costLabel(ucost)})</button>`;
       }
     }
-  } else if (hasSelectedVillager()) {
+  } else if (hasSelectedVillager(s)) {
     html = `<div class="panel-title">Build</div>`;
     for (const kind of BUILDABLE_KINDS) {
       const def = BUILDING_DEFS[kind];
-      const disabled = canAfford(def.cost) ? "" : "disabled";
+      const disabled = canAfford(s, def.cost) ? "" : "disabled";
       html += `<button data-action="build:${kind}" ${disabled}>${def.label} (${costLabel(def.cost)})</button>`;
     }
   }
@@ -518,106 +440,113 @@ function updatePanel(): void {
   }
 }
 
-const loop = new Loop({
-  fixedUpdate: (dt: number): void => {
-    game.fixedUpdate(dt);
-  },
-  frame: (_alpha: number, frameDt: number): void => {
-    // Hotkeys (edge-triggered).
-    if (input.wasPressed("Space")) loop.togglePause();
-    if (input.wasPressed("KeyG")) showGrid = !showGrid;
+/** Per-frame play logic: input → orders, then render. */
+function frameGame(s: Session, frameDt: number): void {
+  if (input.wasPressed("Space")) loop.togglePause();
+  if (input.wasPressed("KeyG")) showGrid = !showGrid;
 
-    updateCamera(frameDt);
+  updateCamera(s, frameDt);
 
-    // Placement mode intercepts clicks; otherwise selection + orders run.
-    placement.update(input, camera, game.world, game.map, game.occ);
-    if (placement.isActive()) {
-      if (input.wasPressed("Escape") || input.wasButtonPressed(2)) {
-        placement.cancel();
+  s.placement.update(input, s.camera, s.game.world, s.game.map, s.game.occ);
+  if (s.placement.isActive()) {
+    if (input.wasPressed("Escape") || input.wasButtonPressed(2)) {
+      s.placement.cancel();
+    } else if (input.wasButtonPressed(0)) {
+      const placed = placeBuildingAtGhost(s);
+      const shift = input.isKeyDown("ShiftLeft") || input.isKeyDown("ShiftRight");
+      if (placed && !shift) s.placement.cancel(); // Shift keeps placing.
+    }
+  } else {
+    if (input.wasPressed("KeyF") && hasSelectedUnit(s)) s.attackMoveArmed = true;
+
+    if (s.attackMoveArmed) {
+      if (input.wasButtonPressed(2)) {
+        s.attackMoveArmed = false;
       } else if (input.wasButtonPressed(0)) {
-        const placed = placeBuildingAtGhost();
-        const shift = input.isKeyDown("ShiftLeft") || input.isKeyDown("ShiftRight");
-        if (placed && !shift) placement.cancel(); // Shift keeps placing.
+        const p = s.camera.screenToWorld(input.mouseX, input.mouseY);
+        const t = worldToTile(p.wx, p.wy);
+        if (s.game.map.inBounds(t.tx, t.ty)) issueAttackMove(s, t);
+        s.attackMoveArmed = false;
       }
     } else {
-      // Attack-move: press F (with units selected) to arm; next left-click sets it.
-      if (input.wasPressed("KeyF") && hasSelectedUnit()) attackMoveArmed = true;
-
-      if (attackMoveArmed) {
-        if (input.wasButtonPressed(2)) {
-          attackMoveArmed = false; // right-click cancels the armed cursor
-        } else if (input.wasButtonPressed(0)) {
-          const p = camera.screenToWorld(input.mouseX, input.mouseY);
-          const t = worldToTile(p.wx, p.wy);
-          if (game.map.inBounds(t.tx, t.ty)) issueAttackMove(t);
-          attackMoveArmed = false;
-        }
-      } else {
-        selection.update(input, camera, game.world);
-        // Don't fire an order with the stale selection while a marquee is live.
-        if (input.wasButtonPressed(2) && selection.getDragBox() === null) issueRightClick();
-      }
-
-      if (input.wasPressed("KeyQ")) trainFromSelectedBuilding();
-      if (input.wasPressed("Escape")) {
-        if (attackMoveArmed) attackMoveArmed = false;
-        else selection.clear();
-      }
+      s.selection.update(input, s.camera, s.game.world);
+      if (input.wasButtonPressed(2) && s.selection.getDragBox() === null) issueRightClick(s);
     }
 
-    updatePanel();
+    if (input.wasPressed("KeyQ")) trainFromSelectedBuilding(s);
+    if (input.wasPressed("Escape")) {
+      if (s.attackMoveArmed) s.attackMoveArmed = false;
+      else s.selection.clear();
+    }
+  }
 
-    // Smoothed fps for the HUD.
-    const instantaneous = frameDt > 0 ? 1 / frameDt : 0;
-    fps += (instantaneous - fps) * 0.1;
+  updatePanel(s);
 
-    renderer.render(camera, game.map, showGrid, drawOverlay);
-    updateHud();
-    updateResbar();
+  const instantaneous = frameDt > 0 ? 1 / frameDt : 0;
+  fps += (instantaneous - fps) * 0.1;
 
+  renderer.render(s.camera, s.game.map, showGrid, (ctx) => drawOverlay(s, ctx));
+  updateHud(s);
+  updateResbar(s);
+}
+
+const loop = new Loop({
+  fixedUpdate: (dt: number): void => {
+    if (appState === "playing" && session !== null) session.game.fixedUpdate(dt);
+  },
+  frame: (_alpha: number, frameDt: number): void => {
+    if (appState === "playing" && session !== null) {
+      // Check the outcome BEFORE running a frame of input — so the frame that
+      // decides the match doesn't also process orders against an ended game.
+      const m = getMatchState(session.game.world);
+      if (m !== undefined && m.over) endMatch(m.winner);
+      else frameGame(session, frameDt);
+    }
     input.endFrame();
   },
 });
 
-// One delegated listener handles every context-panel button (build / train /
-// cancel), so the panel HTML can be rebuilt freely without re-binding.
+// One delegated listener handles every context-panel button.
 if (controls instanceof HTMLElement) {
   controls.addEventListener("click", (ev) => {
+    if (session === null || appState !== "playing") return;
     const t = ev.target;
     if (!(t instanceof HTMLElement)) return;
     const btn = t.closest("[data-action]");
     if (!(btn instanceof HTMLElement)) return;
     const action = btn.getAttribute("data-action") ?? "";
-    if (action === "cancel-place") placement.cancel();
-    else if (action === "train") trainFromSelectedBuilding();
-    else if (action.startsWith("build:")) placement.begin(action.slice(6) as BuildingKind);
+    if (action === "cancel-place") session.placement.cancel();
+    else if (action === "train") trainFromSelectedBuilding(session);
+    else if (action.startsWith("build:")) session.placement.begin(action.slice(6) as BuildingKind);
     if (btn instanceof HTMLButtonElement) btn.blur();
   });
 }
 
+// Start at the lobby.
+lobby.show();
 loop.start();
 
-// Expose for debugging in the browser console.
-Object.assign(window as unknown as Record<string, unknown>, {
-  game,
-  camera,
-  loop,
-  selection,
-  placement,
-  getPlayer: () => getPlayerState(game.world, PLAYER_ID),
-  queuedForPlayer: () => queuedForPlayer(PLAYER_ID),
-  spawn: (kind: "villager" | "spearman" | "archer", tx: number, ty: number, owner: number) =>
-    spawnUnit(game.world, kind, tx, ty, owner),
-  spawnBuilding: (kind: BuildingKind, owner: number, tx: number, ty: number) => {
-    const e = spawnBuilding(game.world, kind, owner, tx, ty);
-    const b = game.world.get(e, CBuilding);
-    if (b !== undefined) game.setBuildingOccupancy(b, true);
-    return e;
-  },
-});
+/** Expose the current session for debugging in the browser console. */
+function exposeDebug(s: Session): void {
+  Object.assign(window as unknown as Record<string, unknown>, {
+    game: s.game,
+    camera: s.camera,
+    loop,
+    selection: s.selection,
+    placement: s.placement,
+    getPlayer: () => getPlayerState(s.game.world, PLAYER_ID),
+    spawn: (kind: "villager" | "spearman" | "archer", tx: number, ty: number, owner: number) =>
+      spawnUnit(s.game.world, kind, tx, ty, owner),
+    spawnBuilding: (kind: BuildingKind, owner: number, tx: number, ty: number) => {
+      const e = spawnBuilding(s.game.world, kind, owner, tx, ty);
+      const b = s.game.world.get(e, CBuilding);
+      if (b !== undefined) s.game.setBuildingOccupancy(b, true);
+      return e;
+    },
+  });
+}
 
-// On hot-reload, tear down the old loop and listeners so we don't stack a
-// second RAF loop / duplicate input handlers on top of the new module.
+// On hot-reload, tear down the loop + listeners so we don't stack duplicates.
 if (import.meta.hot) {
   import.meta.hot.dispose(() => {
     loop.stop();

@@ -1,5 +1,6 @@
 import { defineComponent } from "@/ecs/types";
 import type { GridPoint } from "@/math/iso";
+import type { Difficulty } from "@/game/match";
 
 /**
  * Phase 1 components. All are plain, JSON-safe data (see WorldSnapshot's
@@ -55,6 +56,8 @@ export const CUnit = defineComponent<Unit>("Unit");
 
 /** The human player's id. Only owner-0 units are player-selectable. */
 export const PLAYER_ID = 0;
+/** The (single) AI opponent's id in a 1v1 match (Phase 5). */
+export const AI_ID = 1;
 
 /**
  * Per-unit-kind definition: movement, HP, (Phase 4) combat stats, and training
@@ -182,6 +185,41 @@ export interface PlayerState {
   /** Population currently used (units owned) and the current cap. */
   popUsed: number;
   popCap: number;
+  /** True for a computer-controlled player (Phase 5). */
+  isAI: boolean;
+  /** AI difficulty (null for the human). */
+  difficulty: Difficulty | null;
+  /** Set once all this player's buildings are destroyed (lost the match). */
+  defeated: boolean;
+}
+
+/**
+ * Bookkeeping for one AI player, stored on its player entity (so it serializes
+ * and stays deterministic across save/load — a stateless system can't hold a
+ * counter without breaking determinism on reload). `AiSystem` owns the schema of
+ * `stage`; everything here is plain JSON-safe data.
+ */
+export interface AiMemory {
+  owner: number;
+  /** Increments every AI update; the think cadence derives from this. */
+  ticks: number;
+  /** Build-order stage label (AiSystem-defined). */
+  stage: string;
+  /** True while committed to an attack push (army marching / fighting). */
+  attacking: boolean;
+  /** Remembered rally / attack target tile (enemy direction). -1 = none yet. */
+  rallyTx: number;
+  rallyTy: number;
+}
+
+/**
+ * Singleton match-outcome state (one entity per game). Latches once decided so
+ * the result is stable. Deterministic + serialized so a loaded game knows it's
+ * already over. `winner` is the surviving player's id, or null for a draw.
+ */
+export interface MatchState {
+  over: boolean;
+  winner: number | null;
 }
 
 /** Training queue on a building (Town Center). Trains villagers one at a time. */
@@ -199,6 +237,8 @@ export const CBuild = defineComponent<Build>("Build");
 export const CGather = defineComponent<Gather>("Gather");
 export const CPlayer = defineComponent<PlayerState>("Player");
 export const CTrainQueue = defineComponent<TrainQueue>("TrainQueue");
+export const CAiMemory = defineComponent<AiMemory>("AiMemory");
+export const CMatch = defineComponent<MatchState>("Match");
 
 /** How much a gatherer can carry before returning to a drop-off. */
 export const CARRY_CAPACITY = 10;

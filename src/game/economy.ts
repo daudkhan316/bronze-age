@@ -5,9 +5,10 @@ import {
   CBuilding,
   CResourceNode,
   CTransform,
+  CMatch,
   BUILDING_DEFS,
 } from "@/game/components";
-import type { PlayerState, Building, ResourceNode, ResourceKind } from "@/game/components";
+import type { PlayerState, MatchState, Building, ResourceNode, ResourceKind } from "@/game/components";
 import { worldToTile } from "@/math/iso";
 import type { GridPoint } from "@/math/iso";
 import type { GameMap } from "@/map/GameMap";
@@ -19,6 +20,12 @@ export function getPlayerState(world: World, owner: number): PlayerState | undef
   for (const [, ps] of world.query(CPlayer)) {
     if (ps.id === owner) return ps;
   }
+  return undefined;
+}
+
+/** The singleton match-state, or undefined before one is created. */
+export function getMatchState(world: World): MatchState | undefined {
+  for (const [, m] of world.query(CMatch)) return m;
   return undefined;
 }
 

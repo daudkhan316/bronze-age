@@ -21,16 +21,19 @@ Requires Node 18+ (developed on Node 20). A modern desktop browser (Chrome/Safar
 
 ---
 
-## Current status — Phase 4: Combat ✅
+## Current status — Phase 5: Enemy AI + match flow ✅
 
-Two armies can fight: melee + ranged units, projectiles, attack & attack-move
-orders with auto-retaliate, unit counters, death, and **fog of war** — on top of
-the Phase 0–3 economy and base-building.
+A full, beatable **1v1 match against a computer opponent**. A pre-game **lobby**
+(map size · AI difficulty · starting resources · seed) sets up the game; a
+rule-based AI economies up, trains an army and attacks; the match ends in
+**Victory / Defeat** when one side's buildings are all destroyed — on top of the
+Phase 0–4 economy, base-building and combat.
 
 ### Controls
 
 | Input | Action |
 | --- | --- |
+| **Lobby** → Start match | Choose map size, AI difficulty, starting resources, seed |
 | **Left-click** unit / building | Select unit, or single-select a building |
 | **Left-drag** box · **double-click** · **Shift** | Box-select · select by type · add/toggle |
 | Select a villager → **Build** menu | Pick a building to place (ghost → left-click) |
@@ -41,16 +44,18 @@ the Phase 0–3 economy and base-building.
 | `W` `A` `S` `D` / Arrows / edge / middle-drag | Pan · wheel: zoom |
 | `Space` pause · `G` grid · `Esc` cancel | |
 
-You start with 3 villagers, a Town Center and 2 houses. Build a **Barracks**
-(spearmen) and an **Archery Range** (archers), make an army, and crush the debug
-enemy force off to the east. Idle military auto-retaliate when enemies wander
-into range; villagers don't auto-fight.
+Each side starts with 3 villagers, a Town Center and 2 houses, in opposite
+quadrants. Boom your economy, build a **Barracks** (spearmen) and **Archery
+Range** (archers), and destroy every enemy building before the AI destroys yours.
+Idle military auto-retaliate when enemies wander into range; villagers don't.
 
-> **Combat:** damage = `max(1, attack − armor)` (melee) or `− pierce-armor`
-> (ranged) plus counter bonuses (spearmen beat archers; archers harry villagers).
-> Archers fire homing arrows. Units die at 0 HP (HP bars show damage). **Fog of
-> war:** you only see tiles near your units/buildings; enemy units vanish when out
-> of sight, enemy buildings are remembered once seen, the rest is black.
+> **The AI** gathers a balanced resource mix, builds houses + military buildings,
+> masses an army to a difficulty-tuned threshold, then attacks — marching on your
+> base through its own **fog of war** (Easy / Medium / Hard tune economy size,
+> army size and reaction speed). **Combat:** damage = `max(1, attack − armor)`
+> (melee) or `− pierce-armor` (ranged) plus counter bonuses (spearmen beat
+> archers; archers harry villagers). **Win/lose:** lose all your buildings and
+> it's over — the result screen offers _Play again_.
 
 ---
 
@@ -87,8 +92,12 @@ src/
     CombatSystem.ts    Acquire/chase/attack (melee + ranged) + attack-move.
     ProjectileSystem.ts  Arrows home on targets and resolve impact damage.
     DeathSystem.ts     Reaps 0-hp entities each tick; frees building occupancy.
+    MatchSystem.ts     Win/lose: marks players defeated, latches the match result.
     EconomySystem.ts   Population recount + building training queues.
-    FogSystem.ts       Recomputes the viewer's visibility from unit/building sight.
+    FogSystem.ts       Recomputes one player's visibility from unit/building sight.
+    AiSystem.ts        Computer opponent: rule-based build-order brain (enqueues commands).
+  ui/
+    Lobby.ts           VIEW-state pre-game match-setup form → MatchConfig.
   selection/
     SelectionController.ts  VIEW-state selection: units (click/box/double-click) + 1 building.
   placement/
@@ -105,11 +114,13 @@ src/
     Input.ts           Keyboard/mouse/wheel state, per-frame deltas, edge-scroll.
   game/
     components.ts      All components + unit/building data tables (plain, JSON-safe).
+    commands.ts        Per-tick command buffer + authoritative executor (all sim writes).
+    match.ts           MatchConfig + presets (map sizes, difficulties, resource levels, AI params).
     spawn.ts           Factories: unit / resource node / building / player / projectile.
-    economy.ts         Domain helpers: player lookup, drop-off / node search, approach tiles.
+    economy.ts         Domain helpers: player/match lookup, drop-off / node search, approach tiles.
     combat.ts          Combat helpers: enemy search, damage calc, apply-damage, reap-dead.
-    Game.ts            Owns world + map + occupancy + fog + systems + tick; setup; save/load.
-  main.ts              Bootstraps everything; wires loop, input, orders, placement, combat, HUD.
+    Game.ts            Owns world + map + occupancy + per-player fog + command buffer + systems + tick.
+  main.ts              App-state machine (menu/playing/gameover); wires loop, input→commands, HUD, overlays.
 ```
 
 ### Key design decisions (and where we diverge from AoE)
@@ -133,7 +144,12 @@ src/
 - **Divergence — defensive structures deferred.** Phase 3 shipped the economy buildings + Barracks; Phase 4 adds the Archery Range. Walls/Gates/Towers come with later phases. There's still no cancel-after-place refund.
 - **Centralised death.** Combat and projectile systems only call `applyDamage` (subtract HP); a separate `DeathSystem` reaps 0-HP entities once per tick (freeing a dead building's occupancy). Nothing destroys entities mid-iteration, so the damage-dealing systems can't corrupt the query they're walking.
 - **Combat is intent + resolution split across systems.** `CombatSystem` decides (acquire/chase/attack) and sets Movement paths; `MovementSystem` walks; ranged attacks spawn a homing `Projectile` that `ProjectileSystem` flies and resolves. Damage = `max(1, attack − armor/pierce)` plus a small `DAMAGE_BONUS` counter table. All deterministic on the fixed tick.
-- **Fog of war is derived, not serialized.** A per-player `Fog` (visible + explored grids) is recomputed every tick by `FogSystem` from unit/building sight; the renderer hides enemy units outside current vision and remembers enemy buildings once explored. Like occupancy, it's rebuilt rather than saved (explored history resets on load — acceptable for now).
+- **Fog of war is derived, not serialized.** A per-player `Fog` (visible + explored grids) is recomputed every tick by `FogSystem` from unit/building sight; the renderer hides enemy units outside current vision and remembers enemy buildings once explored. Like occupancy, it's rebuilt rather than saved (explored history resets on load — acceptable for now). **Phase 5 builds one fog + FogSystem per player** — the human's drives rendering, the AI's gates its own targeting.
+- **Every sim write goes through a per-tick command buffer.** Both the human's input handlers and the AI push plain `Command` objects into a shared `CommandBuffer`; `Game.fixedUpdate` drains it at the *start* of each tick and applies each via one authoritative `executeCommand` (the only place orders mutate units/buildings). The view never touches the world. The executor re-validates ownership/liveness/affordability/placement at apply time, so a stale command (a unit died in the ~1 tick since it was queued) just no-ops. The buffer is part of the save snapshot, so queued intents survive save/load — the whole thing stays deterministic (verified: a restored copy ticks byte-identically, even with commands pending).
+- **The AI is just another command source.** `AiSystem` runs as the last sim system; per AI player it advances a rule-based build-order state machine (gather a balanced food/wood/gold mix → houses for pop room → Town-Center villagers → Barracks/Archery Range → an army → attack at a difficulty-tuned threshold) and **enqueues the same commands the human does** — no special back door into the world. Determinism comes from a serialized `AiMemory.ticks` cadence counter and drawing only from the sim RNG. It's **fog-limited**: it attacks the nearest enemy building it has actually explored, otherwise marches on the mirror of its own start (discovering you en route). Difficulty (Easy/Medium/Hard) tunes villager/army targets, caps and reaction speed via an `AI_PARAMS` table.
+- **Win/lose is a sim fact, latched once.** `MatchSystem` marks a player defeated when they own zero buildings (foundations count — you're alive while any structure stands) and latches the survivor into a singleton `Match` component; the result is deterministic and serialized. The view reads it to raise the Victory/Defeat overlay.
+- **Match setup + app state are pure view.** A `menu → playing → gameover` state machine in `main.ts` shows the `Lobby` (a `MatchConfig` form), builds a fresh `Game` from it, and on a decided match shows the result screen with _Play again_. `Game` is constructed from a `MatchConfig` (seed, map size, difficulty, starting resources) and spawns both bases in opposite quadrants.
+- **Divergence — AI knows roughly where you start.** Rather than a full scouting layer, a fog-limited AI that has discovered nothing yet commits to a direction (the mirror of its own base across the map centre, which is your start region) and finds you by marching. Honest-ish and standard for a low-tier RTS AI; real scouting is a later refinement.
 
 ### Strictness / quality bar
 
@@ -148,8 +164,8 @@ Full TypeScript strict mode, plus `noUncheckedIndexedAccess`, `exactOptionalProp
 - **Phase 2 — Economy** ✅ (resources, gathering, drop-off, train villagers, pop cap)
 - **Phase 3 — Buildings & construction** ✅ (placement UI, villager-built, Barracks + infantry)
 - **Phase 4 — Combat** ✅ (HP/armor, melee + ranged, projectiles, attack-move, death, fog of war)
-- Phase 5 — Enemy AI, win/lose, match setup
-- Phase 6 — Tech tree, ages, minimap, control groups, save/load, audio, balance
+- **Phase 5 — Enemy AI + match flow** ✅ (lobby, rule-based AI, per-tick command buffer, win/lose)
+- Phase 6 — Tech tree, ages, minimap, control groups, save/load UI, audio, balance
 
 ## Project docs
 

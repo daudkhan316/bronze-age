@@ -19,6 +19,7 @@ import {
   type ResourceKind,
   type BuildingKind,
 } from "@/game/components";
+import type { StartResources, Difficulty } from "@/game/match";
 import { tileCenterWorld, gridToWorld } from "@/math/iso";
 
 /**
@@ -123,17 +124,25 @@ export function spawnBuilding(
   return e;
 }
 
-/** Create a player-economy entity with starting resources. */
-export function spawnPlayer(world: World, id: number): Entity {
+/** Create a player-economy entity with the given starting resources. */
+export function spawnPlayer(
+  world: World,
+  id: number,
+  start: StartResources,
+  opts?: { isAI?: boolean; difficulty?: Difficulty | null },
+): Entity {
   const e = world.createEntity();
   world.add(e, CPlayer, {
     id,
-    food: 200,
-    wood: 200,
-    gold: 100,
-    stone: 100,
+    food: start.food,
+    wood: start.wood,
+    gold: start.gold,
+    stone: start.stone,
     popUsed: 0,
     popCap: 0,
+    isAI: opts?.isAI ?? false,
+    difficulty: opts?.difficulty ?? null,
+    defeated: false,
   });
   return e;
 }

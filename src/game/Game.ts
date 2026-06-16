@@ -8,7 +8,7 @@ import { Random } from "@/core/Random";
 import { gridToWorld } from "@/math/iso";
 import type { GridPoint } from "@/math/iso";
 import type { Vec2 } from "@/math/Vec2";
-import { DEFAULT_MAP_W, DEFAULT_MAP_H, SIM_SEED_OFFSET } from "@/config";
+import { SIM_SEED_OFFSET } from "@/config";
 import { Occupancy } from "@/map/Occupancy";
 import { Fog } from "@/map/Fog";
 import { MovementSystem } from "@/systems/MovementSystem";
@@ -19,9 +19,24 @@ import { ProjectileSystem } from "@/systems/ProjectileSystem";
 import { EconomySystem } from "@/systems/EconomySystem";
 import { DeathSystem } from "@/systems/DeathSystem";
 import { FogSystem } from "@/systems/FogSystem";
+import { MatchSystem } from "@/systems/MatchSystem";
+import { AiSystem } from "@/systems/AiSystem";
 import { spawnUnit, spawnResourceNode, spawnBuilding, spawnPlayer } from "@/game/spawn";
 import { canStand } from "@/pathfinding/astar";
-import { PLAYER_ID, CBuilding, type Building, type ResourceKind, type UnitKind } from "@/game/components";
+import { CommandBuffer, executeCommand } from "@/game/commands";
+import {
+  PLAYER_ID,
+  AI_ID,
+  CBuilding,
+  CTransform,
+  CPlayer,
+  CAiMemory,
+  CMatch,
+  BUILDING_DEFS,
+  type Building,
+  type ResourceKind,
+} from "@/game/components";
+import type { MatchConfig } from "@/game/match";
 
 export interface WorldBounds {
   minX: number;
@@ -38,6 +53,8 @@ export interface GameSnapshot {
   rng: number;
   world: WorldSnapshot;
   map: { width: number; height: number; tiles: Terrain[] };
+  /** Pending command buffer (intents queued but not yet applied). */
+  commands: ReturnType<CommandBuffer["serialize"]>;
 }
 
 /** Pre-built pieces used to restore a Game without regenerating the map. */
@@ -50,12 +67,12 @@ interface GameRestore {
 
 /**
  * Owns everything in the deterministic simulation: the ECS world, the map, the
- * occupancy grid, the seeded RNG, the ordered system list, and the tick counter.
- * The render/camera/input layers live outside and only read from here.
+ * occupancy grid, per-player fog, the seeded RNG, the per-tick command buffer,
+ * the ordered system list, and the tick counter. The render/camera/input layers
+ * live outside and only read from here (and enqueue commands).
  *
  * Map generation and the simulation use SEPARATE RNG streams (derived from the
- * same seed) so the sim's randomness doesn't depend on map geometry — see the
- * note in the constructor.
+ * same seed) so the sim's randomness doesn't depend on map geometry.
  */
 export class Game {
   readonly world: World;
@@ -63,16 +80,18 @@ export class Game {
   readonly seed: number;
   /** Tiles blocked by buildings (rebuilt on load; not serialized). */
   readonly occ: Occupancy;
-  /** Human player's fog of war (derived, recomputed each tick; not serialized). */
-  readonly fog: Fog;
+  /** Per-player fog of war (derived, recomputed each tick; not serialized). */
+  private readonly fogs = new Map<number, Fog>();
+  /** Pending player + AI intents, applied at the start of each tick. */
+  readonly commands = new CommandBuffer();
   /** Simulation RNG — never use Math.random() in sim code, draw from this. */
   readonly rng: Random;
   /** Authoritative simulation time, in ticks. Part of the save snapshot. */
   tick = 0;
   private readonly systems: System[];
 
-  constructor(seed: number, restore?: GameRestore) {
-    this.seed = seed;
+  constructor(config: MatchConfig, restore?: GameRestore) {
+    this.seed = config.seed;
     if (restore !== undefined) {
       this.rng = restore.rng;
       this.map = restore.map;
@@ -81,19 +100,25 @@ export class Game {
       this.occ = new Occupancy(this.map.width, this.map.height);
       this.rebuildOccupancy();
     } else {
-      const genRng = new Random(seed);
-      this.map = generateMap(DEFAULT_MAP_W, DEFAULT_MAP_H, genRng);
-      this.rng = new Random((seed ^ SIM_SEED_OFFSET) >>> 0);
+      const genRng = new Random(config.seed);
+      this.map = generateMap(config.mapW, config.mapH, genRng);
+      this.rng = new Random((config.seed ^ SIM_SEED_OFFSET) >>> 0);
       this.world = new World();
       this.occ = new Occupancy(this.map.width, this.map.height);
-      this.setupEconomy();
+      this.setupMatch(config);
     }
-    this.fog = new Fog(this.map.width, this.map.height);
-    // Systems are logic, not state — recreated on load, never serialized. Order:
-    // gather/build (set paths, harvest, construct) → combat (acquire/attack, set
-    // chase paths) → movement (consume paths) → projectiles (fly + impact) →
-    // death (reap 0-hp, free occupancy) → economy (pop + training) → fog (vision).
-    const fogSystem = new FogSystem(this.fog, PLAYER_ID);
+
+    // One fog + FogSystem per player present in the world (fresh or restored).
+    const fogSystems: FogSystem[] = [];
+    for (const [, p] of this.world.query(CPlayer)) {
+      const fog = new Fog(this.map.width, this.map.height);
+      this.fogs.set(p.id, fog);
+      fogSystems.push(new FogSystem(fog, p.id));
+    }
+
+    // System order each tick: gather/build → combat → movement → projectiles →
+    // death (reap 0-hp) → match (win/lose) → economy (pop + training) → fog
+    // (vision) → ai (decides on fresh fog, enqueues for next tick).
     this.systems = [
       new GatherSystem(this.map, this.occ),
       new BuildSystem(this.map, this.occ),
@@ -101,13 +126,27 @@ export class Game {
       new MovementSystem(this.map, this.occ),
       new ProjectileSystem(),
       new DeathSystem(this.occ),
+      new MatchSystem(),
       new EconomySystem(this.map, this.occ),
-      fogSystem,
+      ...fogSystems,
+      new AiSystem(this.map, this.occ, this.commands, this.rng, (owner) => this.fogs.get(owner)),
     ];
-    // Populate the fog once now: the first rendered frame runs before the first
-    // fixed tick, so without this the whole viewport (including our own town)
-    // would flash black for a frame — and stay black if a game is loaded paused.
-    fogSystem.update(this.world, 0);
+
+    // Populate fog once now so the first rendered frame (which runs before the
+    // first fixed tick) isn't a black flash over our own town.
+    for (const fs of fogSystems) fs.update(this.world, 0);
+  }
+
+  /** The human player's fog (always present). */
+  get fog(): Fog {
+    const f = this.fogs.get(PLAYER_ID);
+    if (f === undefined) throw new Error("Game: human fog missing");
+    return f;
+  }
+
+  /** A given player's fog, or undefined. */
+  fogFor(owner: number): Fog | undefined {
+    return this.fogs.get(owner);
   }
 
   /** Rebuild the occupancy grid from the world's building footprints. */
@@ -123,16 +162,12 @@ export class Game {
     this.occ.setRect(b.tx, b.ty, b.w, b.h, blocked);
   }
 
-  // --- initial economy setup (fresh game only) ----------------------------
+  // --- initial match setup (fresh game only) -------------------------------
 
-  private setupEconomy(): void {
+  private setupMatch(config: MatchConfig): void {
     const map = this.map;
-    const cx = Math.floor(map.width / 2);
-    const cy = Math.floor(map.height / 2);
 
-    spawnPlayer(this.world, PLAYER_ID);
-
-    // Turn resource terrain into harvestable nodes (trees / gold / stone).
+    // Turn resource terrain into harvestable nodes across the whole map.
     for (let ty = 0; ty < map.height; ty++) {
       for (let tx = 0; tx < map.width; tx++) {
         const t = map.get(tx, ty);
@@ -142,12 +177,37 @@ export class Game {
       }
     }
 
-    // Town Center on a clear 3×3 area near the centre.
-    const tc = this.findClearArea(cx, cy, 3, 3) ?? { tx: cx, ty: cy };
-    spawnBuilding(this.world, "town_center", PLAYER_ID, tc.tx, tc.ty);
-    this.occ.setRect(tc.tx, tc.ty, 3, 3, true);
+    // Human and AI start on a diagonal (opposite quadrants), away from edges.
+    spawnPlayer(this.world, PLAYER_ID, config.startResources, { isAI: false });
+    this.setupBase(PLAYER_ID, Math.round(map.width * 0.3), Math.round(map.height * 0.3));
 
-    // Two houses on nearby clear 2×2 areas.
+    const aiEntity = spawnPlayer(this.world, AI_ID, config.startResources, {
+      isAI: true,
+      difficulty: config.difficulty,
+    });
+    this.world.add(aiEntity, CAiMemory, {
+      owner: AI_ID,
+      ticks: 0,
+      stage: "boot",
+      attacking: false,
+      rallyTx: -1,
+      rallyTy: -1,
+    });
+    this.setupBase(AI_ID, Math.round(map.width * 0.7), Math.round(map.height * 0.7));
+
+    // Singleton match-state (decided by MatchSystem).
+    const m = this.world.createEntity();
+    this.world.add(m, CMatch, { over: false, winner: null });
+  }
+
+  /** Lay down one player's starting base: Town Center, two houses, guaranteed
+   *  wood/food nearby, and three villagers around the Town Center. */
+  private setupBase(owner: number, cx: number, cy: number): void {
+    const tcDef = BUILDING_DEFS.town_center;
+    const tc = this.findClearArea(cx, cy, tcDef.w, tcDef.h) ?? { tx: cx, ty: cy };
+    spawnBuilding(this.world, "town_center", owner, tc.tx, tc.ty);
+    this.occ.setRect(tc.tx, tc.ty, tcDef.w, tcDef.h, true);
+
     let houses = 0;
     const offsets: ReadonlyArray<readonly [number, number]> = [
       [-3, 0],
@@ -162,7 +222,7 @@ export class Game {
       const hx = tc.tx + ox;
       const hy = tc.ty + oy;
       if (this.areaClear(hx, hy, 2, 2)) {
-        spawnBuilding(this.world, "house", PLAYER_ID, hx, hy);
+        spawnBuilding(this.world, "house", owner, hx, hy);
         this.occ.setRect(hx, hy, 2, 2, true);
         houses++;
       }
@@ -174,28 +234,7 @@ export class Game {
 
     // Three starting villagers on standable tiles ringing the Town Center.
     const spots = this.tilesAround(tc.tx, tc.ty, 3, 3, 3);
-    for (const s of spots) spawnUnit(this.world, "villager", s.tx, s.ty, PLAYER_ID);
-
-    // Debug enemy force (owner 1) off to one side so combat is testable before
-    // Phase 5 brings a real AI opponent.
-    this.spawnSquad(["spearman", "spearman", "spearman", "archer", "archer"], tc.tx + 18, tc.ty, 1);
-  }
-
-  /** Place a squad of unit kinds on standable tiles spiralling out from (cx, cy). */
-  private spawnSquad(kinds: readonly UnitKind[], cx: number, cy: number, owner: number): void {
-    let i = 0;
-    for (let r = 0; r <= 10 && i < kinds.length; r++) {
-      for (let dy = -r; dy <= r && i < kinds.length; dy++) {
-        for (let dx = -r; dx <= r && i < kinds.length; dx++) {
-          if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
-          if (!canStand(this.map, cx + dx, cy + dy, this.occ)) continue;
-          const k = kinds[i];
-          if (k === undefined) break;
-          spawnUnit(this.world, k, cx + dx, cy + dy, owner);
-          i++;
-        }
-      }
-    }
+    for (const s of spots) spawnUnit(this.world, "villager", s.tx, s.ty, owner);
   }
 
   /** All tiles of a w×h block are in-bounds, standable, and unoccupied. */
@@ -268,8 +307,11 @@ export class Game {
     return out;
   }
 
-  /** Run one fixed simulation tick: every system in order, then advance time. */
+  /** Run one fixed simulation tick: drain queued commands, then every system. */
   fixedUpdate(dt: number): void {
+    for (const cmd of this.commands.drain()) {
+      executeCommand(this.world, this.map, this.occ, cmd);
+    }
     for (const system of this.systems) {
       system.update(this.world, dt);
     }
@@ -287,21 +329,44 @@ export class Game {
         height: this.map.height,
         tiles: [...this.map.data],
       },
+      commands: this.commands.serialize(),
     };
   }
 
   static deserialize(snap: GameSnapshot): Game {
-    return new Game(snap.seed, {
-      rng: Random.restore(snap.rng),
-      map: new GameMap(snap.map.width, snap.map.height, [...snap.map.tiles]),
-      world: World.deserialize(snap.world),
-      tick: snap.tick,
-    });
+    const game = new Game(
+      {
+        seed: snap.seed,
+        mapW: snap.map.width,
+        mapH: snap.map.height,
+        difficulty: "medium",
+        startResources: { food: 0, wood: 0, gold: 0, stone: 0 },
+      },
+      {
+        rng: Random.restore(snap.rng),
+        map: new GameMap(snap.map.width, snap.map.height, [...snap.map.tiles]),
+        world: World.deserialize(snap.world),
+        tick: snap.tick,
+      },
+    );
+    game.commands.restore(snap.commands);
+    return game;
   }
 
-  /** World-space point at the centre of the map (initial camera target). */
+  /** World-space point at the centre of the map (camera fallback). */
   centerWorld(): Vec2 {
     return gridToWorld(this.map.width / 2, this.map.height / 2);
+  }
+
+  /** World point of a player's Town Center (for centring the camera), or map centre. */
+  playerCenterWorld(owner: number): Vec2 {
+    for (const [e, b] of this.world.query(CBuilding)) {
+      if (b.owner === owner && b.kind === "town_center") {
+        const tr = this.world.get(e, CTransform);
+        if (tr !== undefined) return { x: tr.x, y: tr.y };
+      }
+    }
+    return this.centerWorld();
   }
 
   /** World-space bounding box of the map's four corners (for camera clamping). */
