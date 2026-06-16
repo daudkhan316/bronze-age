@@ -6,7 +6,7 @@ the next phase's task list. The original brief is in [`PROMPT.md`](PROMPT.md).
 **Update this file at the end of every phase**, commit, and push. It is written
 to be self-sufficient so work resumes cleanly in a fresh context.
 
-Last updated: end of **Phase 5**.
+Last updated: **Phase 6, slice 1 (tech & ages)**.
 
 ## Status
 
@@ -18,7 +18,9 @@ Last updated: end of **Phase 5**.
 | 3 | Buildings & construction | ✅ | `9b3ba20` |
 | 4 | Combat | ✅ | `af42910` |
 | 5 | Enemy AI + match flow | ✅ | `59c0489` |
-| 6 | Depth (tech/ages/minimap/audio/save UI) | ⬜ **Next** | — |
+| 6 | Depth — **built in slices** | 🔨 in progress | — |
+| 6a | · Tech tree & ages | ✅ | `01502be` |
+| 6b+ | · Minimap · control groups · save/load UI · audio · balance · walls/gates | ⬜ **Next** | — |
 
 ## Commands
 
@@ -124,12 +126,32 @@ real ones — major = AI gather monoculture starved wood (now distributed
 food/wood/gold); plus builder de-dup, military cap counts queued, disengage halts
 survivors, match-end frame ordering, `#controls` guard.
 
-### Phase 6 — Depth
-Tech tree + ages; more units/buildings/upgrades; minimap; control groups (Ctrl+1–9);
-save/load UI; audio (CC0); balance pass.
+### Phase 6 — Depth (built in slices)
+A grab-bag, done one reviewable slice at a time (stop + review per slice).
+
+**Slice 1 — Tech tree & ages ✅ (`01502be`)** — Ages Stone→Bronze→Iron (advanced at
+the TC; gate buildings/upgrades via `ageRequired`, enforced in executor + UI).
+Per-player tech (`Player.age` + `techs`); `src/game/tech.ts` folds `UPGRADE_DEFS`
+into EFFECTIVE stats read by combat/gather/tower (research changes outcomes without
+mutating base tables; serializes free). Blacksmith (Forging/Scale Armor/Fletching/
+Iron Casting) + Wheelbarrow/age advances at the TC; `Research` component advanced by
+`ResearchSystem` (before `DeathSystem`); single `research` command (AI + human).
+Watch Tower = building-attacker (`TowerSystem`, `"tower"` attacker kind, costs stone).
+AI teches by BANKING (pauses unit production to afford its next tech goal). Built by
+a subagent (AI tech layer) against the tech contracts. Review: 2 reviewers; fixed
+research/death tick-race, tower counter-bonus, AI stone food-guard, AI Iron banking.
+
+**Remaining slices** — see "Next up" below.
 
 ## Deferred backlog (carry-over)
 
+- **[P6 later slices]** From slice 1 (tech & ages): **walls / gates** (drag-placement +
+  open/close) and **age-gated units** (e.g. cavalry / a stronger melee unit) deferred to
+  keep the slice reviewable. **Watch-tower range** is measured centre-to-tile (vs the
+  footprint-edge metric units use) — ~1 tile short on a 2×2, cosmetic. **AI rarely
+  reaches Iron** (gated behind 2 Blacksmith upgrades + 600f/300g — only very long games);
+  a tuning lever, not a bug. **Mid-research building death** forfeits the paid cost (no
+  refund) — by design, like demolish.
 - **[done in P5]** Win/lose + match setup ✅; real owner-1 AI replacing the debug
   squad ✅; per-tick command buffer ✅. Console `spawn`/`spawnBuilding` hooks remain
   as debug aids (harmless; on `window`). **Owner stances** (move-only vs aggressive
@@ -154,31 +176,31 @@ save/load UI; audio (CC0); balance pass.
   already destroys buildings + frees occupancy).
 - **[render]** Per-row building depth banding; enemy-building fog gate uses one centre
   tile (cosmetic). **[fog]** explored history resets on load (per-player now).
-- **[Phase 6]** Projectiles snapshot `attack` only and resolve armor/counters vs the
-  defender's live stats at impact — revisit if mutable/tech-modified armor lands.
+- **[Phase 6]** Projectiles snapshot the attacker's *effective* `attack` at fire time
+  but resolve the **defender's live effective armor/counters at impact** — works as
+  intended now that tech-modified armor exists (verified). Keep in mind if mutable
+  attacker stats ever need mid-flight re-evaluation.
 - **[perf]** A* scratch-array pooling; spatial-grid separation. **[feel]** true
   formation movement (vs current distinct-tile spread).
 
-## Next up — Phase 6: Depth
+## Next up — Phase 6 remaining slices
 
-Goal: **make the match richer and more replayable.** Refine at start — this is a
-grab-bag, so pick the highest-value slice first (suggest minimap + control groups +
-save/load UI, then tech/ages, then audio + balance). Reuse the command buffer for any
-new player actions; keep new sim state JSON-safe + serialized; stop & review per slice.
+Tech & ages (slice 1) is done. Remaining grab-bag, **one reviewable slice at a time**
+(stop + review per slice). Suggested order: QoL/UI first, then audio + balance, then
+the heavier content. Reuse the command buffer for any new player actions; keep new sim
+state JSON-safe + serialized; route effective-stat reads through `tech.ts` where relevant.
 
 - [ ] **Minimap** — a corner overview (terrain + owned/enemy buildings + units within
       fog), click-to-recenter / drag-to-pan the camera. Pure view; reads sim + fog.
 - [ ] **Control groups** (Ctrl+1–9 set, 1–9 recall) — view-state selection groups
       (like selection itself; not serialized).
 - [ ] **Save/load UI** — buttons that `Game.serialize()` to a download / localStorage
-      and restore via `Game.deserialize`. Consider adding `MatchConfig` to the snapshot
-      so a loaded game can show its settings (see backlog).
-- [ ] **Tech tree + ages** — researchable upgrades at buildings (e.g. +attack/+armor,
-      faster gather) and an age advance that unlocks units/buildings. New data tables +
-      a research system + cost/time gating; modifiers applied to UNIT_STATS at use.
-- [ ] **More units/buildings/upgrades** — fill out the roster (cavalry counter,
-      defensive structures: walls/gates/towers — deferred since Phase 3).
+      and restore via `Game.deserialize`. Add `MatchConfig` (difficulty/start resources)
+      to `GameSnapshot` so a loaded game can show its settings (see backlog).
+- [ ] **Walls / gates + age-gated units** — finish the defensive structures (drag-placed
+      wall segments + an open/close gate) and add an age-3 unit (cavalry / swordsman).
 - [ ] **Audio (CC0)** — selection/command/combat SFX + ambient; credit in ASSETS.md.
-- [ ] **Balance pass** — tune costs/stats/AI thresholds; AI difficulty smoke-test.
+- [ ] **Balance pass** — tune costs/stats/AI thresholds (incl. AI Iron reachability +
+      tower range metric); AI difficulty smoke-test.
 - [ ] Per slice: review → fix → verify in browser → update README + this file →
       commit → push → stop.
