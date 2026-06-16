@@ -69,5 +69,5 @@ game engine, no backend. Built in **phases (0–6)**, one at a time.
 
 ## Current status
 
-Phases **0, 1, 2 complete**. **Next: Phase 3 — Buildings & construction.**
-See `docs/PROGRESS.md` for the Phase 3 task breakdown and carried-over backlog.
+Phases **0, 1, 2, 3 complete**. **Next: Phase 4 — Combat.**
+See `docs/PROGRESS.md` for the Phase 4 task breakdown and carried-over backlog.
