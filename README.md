@@ -149,9 +149,9 @@ Full TypeScript strict mode, plus `noUncheckedIndexedAccess`, `exactOptionalProp
 
 ## Project docs
 
-- [`CLAUDE.md`](./CLAUDE.md) — orientation + architecture invariants + how we work.
-- [`docs/PLAN.md`](./docs/PLAN.md) — design principles, method, and phase roadmap.
-- [`docs/PROGRESS.md`](./docs/PROGRESS.md) — living status: phases done/next, the
-  deferred-work backlog, and the next phase's task breakdown.
+- [`docs/PLAN.md`](./docs/PLAN.md) — the single living plan: design principles, the
+  method, architecture invariants, phase roadmap **with status + commit SHAs**, the
+  deferred backlog, and the next phase's task breakdown.
 - [`docs/PROMPT.md`](./docs/PROMPT.md) — the original brief.
+- [`CLAUDE.md`](./CLAUDE.md) — a short pointer to the two docs above.
 - [`ASSETS.md`](./ASSETS.md) — art/audio credits.
