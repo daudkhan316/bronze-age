@@ -9,9 +9,12 @@ import {
   CConstruction,
   CPlayer,
   CTrainQueue,
+  CCombat,
+  CProjectile,
   UNIT_STATS,
   NODE_AMOUNT,
   BUILDING_DEFS,
+  PROJECTILE_SPEED,
   type UnitKind,
   type ResourceKind,
   type BuildingKind,
@@ -35,6 +38,33 @@ export function spawnUnit(
   world.add(e, CTransform, { x: centre.x, y: centre.y });
   world.add(e, CUnit, { kind, owner, radius: stats.radius, hp: stats.hp, maxHp: stats.hp });
   world.add(e, CMovement, { speed: stats.speed, path: [], goal: null, stuck: 0 });
+  world.add(e, CCombat, { cooldown: 0, target: null, ordered: false, attackMove: null });
+  return e;
+}
+
+/** Spawn an arrow projectile at (x, y) flying toward `target` (fallback gx,gy). */
+export function spawnProjectile(
+  world: World,
+  x: number,
+  y: number,
+  target: Entity | null,
+  gx: number,
+  gy: number,
+  attack: number,
+  attackerKind: UnitKind,
+  owner: number,
+): Entity {
+  const e = world.createEntity();
+  world.add(e, CTransform, { x, y });
+  world.add(e, CProjectile, {
+    target,
+    gx,
+    gy,
+    speed: PROJECTILE_SPEED,
+    attack,
+    attackerKind,
+    owner,
+  });
   return e;
 }
 

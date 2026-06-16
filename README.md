@@ -21,42 +21,36 @@ Requires Node 18+ (developed on Node 20). A modern desktop browser (Chrome/Safar
 
 ---
 
-## Current status — Phase 3: Buildings & construction ✅
+## Current status — Phase 4: Combat ✅
 
-Build a base and an army: place buildings (ghost preview + validity + cost), have
-villagers construct them over time, then use completed buildings — houses raise
-the population cap, the Barracks trains infantry — on top of the Phase 0–2
-economy.
+Two armies can fight: melee + ranged units, projectiles, attack & attack-move
+orders with auto-retaliate, unit counters, death, and **fog of war** — on top of
+the Phase 0–3 economy and base-building.
 
 ### Controls
 
 | Input | Action |
 | --- | --- |
 | **Left-click** unit / building | Select unit, or single-select a building |
-| **Left-drag** a box | Select all your units in the box |
-| **Double-click** unit | Select all on-screen units of that type |
-| **Shift** + click/drag | Add to / toggle current selection |
-| Select a villager → **Build** menu | Pick a building to place |
-| During placement: **left-click** | Place the foundation (Shift = place several) |
-| During placement: **right-click** / `Esc` | Cancel placement |
-| **Right-click** a foundation | Send selected villagers to construct it |
-| **Right-click** a resource | Send selected villagers to gather it |
-| **Right-click** ground | Move selected units there (A\* path) |
-| Select a building → panel / `Q` | Train its unit (Town Center → villager, Barracks → spearman) |
-| `W` `A` `S` `D` / Arrows / edge / middle-drag | Pan camera · wheel: zoom |
-| `Space` pause · `G` grid · `Esc` clear selection | |
+| **Left-drag** box · **double-click** · **Shift** | Box-select · select by type · add/toggle |
+| Select a villager → **Build** menu | Pick a building to place (ghost → left-click) |
+| **Right-click** an enemy | Attack it (your units chase it down) |
+| **F** then left-click | Attack-move: advance to a point, engaging enemies en route |
+| **Right-click** foundation / resource / ground | Build / gather / move |
+| Select a building → panel / `Q` | Train its unit (Barracks → spearman, Archery Range → archer) |
+| `W` `A` `S` `D` / Arrows / edge / middle-drag | Pan · wheel: zoom |
+| `Space` pause · `G` grid · `Esc` cancel | |
 
-You start with **3 villagers**, a **Town Center** and **2 houses** (pop cap 15).
-Gather wood, select a villager to open the **Build** menu, drop a **House**
-foundation, right-click it to construct it (pop cap rises), then build a
-**Barracks** and train spearmen. Lumber/Mining Camps and a Mill act as nearer
-resource drop-offs.
+You start with 3 villagers, a Town Center and 2 houses. Build a **Barracks**
+(spearmen) and an **Archery Range** (archers), make an army, and crush the debug
+enemy force off to the east. Idle military auto-retaliate when enemies wander
+into range; villagers don't auto-fight.
 
-> **Buildings:** Town Center (3×3, drop-off all, trains villagers), House (2×2,
-> +5 pop), Barracks (3×3, trains spearman), Lumber/Mining Camp & Mill (2×2, nearer
-> drop-offs). A foundation blocks its tiles immediately and is built up by any
-> villagers assigned to it; multiple builders finish faster. Cost is refunded
-> only by not building — there is no cancel-after-place yet.
+> **Combat:** damage = `max(1, attack − armor)` (melee) or `− pierce-armor`
+> (ranged) plus counter bonuses (spearmen beat archers; archers harry villagers).
+> Archers fire homing arrows. Units die at 0 HP (HP bars show damage). **Fog of
+> war:** you only see tiles near your units/buildings; enemy units vanish when out
+> of sight, enemy buildings are remembered once seen, the rest is black.
 
 ---
 
@@ -82,6 +76,7 @@ src/
     GameMap.ts         Flat row-major terrain grid with bounds-checked access.
     generate.ts        Deterministic placeholder map generator (seeded blobs).
     Occupancy.ts       Building-footprint blocked-tile grid (derived; rebuilt on load).
+    Fog.ts             Per-player fog of war: visible + explored tile grids (derived).
   pathfinding/
     astar.ts           8-connected A* (octile heuristic, no corner-cutting, binary heap).
     grid.ts            Walkability/standability (terrain + occupancy) + helpers.
@@ -89,7 +84,11 @@ src/
     MovementSystem.ts  Path-following + occupancy-aware separation; stuck-detection.
     GatherSystem.ts    Villager gather state machine (toNode/gathering/toDrop/depositing).
     BuildSystem.ts     Villager construction state machine (toSite/building → complete).
+    CombatSystem.ts    Acquire/chase/attack (melee + ranged) + attack-move.
+    ProjectileSystem.ts  Arrows home on targets and resolve impact damage.
+    DeathSystem.ts     Reaps 0-hp entities each tick; frees building occupancy.
     EconomySystem.ts   Population recount + building training queues.
+    FogSystem.ts       Recomputes the viewer's visibility from unit/building sight.
   selection/
     SelectionController.ts  VIEW-state selection: units (click/box/double-click) + 1 building.
   placement/
@@ -98,17 +97,19 @@ src/
     Camera.ts          VIEW state only: world<->screen transform, pan/zoom/clamp.
     Renderer.ts        Canvas 2D context, HiDPI scaling, frame orchestration + overlay hook.
     drawMap.ts         Viewport-culled iso tile drawing.
-    drawWorld.ts       ONE depth-sorted pass: resources + buildings + units (+ rings, HP/build bars).
+    drawWorld.ts       ONE depth-sorted pass: resources/buildings/units + projectiles; fog-gates enemies.
     drawPlacement.ts   The build placement ghost (green/red footprint).
+    drawFog.ts         The fog-of-war veil overlay.
     colors.ts          Terrain palette.
   input/
     Input.ts           Keyboard/mouse/wheel state, per-frame deltas, edge-scroll.
   game/
     components.ts      All components + unit/building data tables (plain, JSON-safe).
-    spawn.ts           Factories: unit / resource node / building (foundation) / player.
-    economy.ts         Domain helpers: player lookup, drop-off / node search.
-    Game.ts            Owns world + map + occupancy + systems + tick; setup; save/load.
-  main.ts              Bootstraps everything; wires loop, input, orders, placement, HUD/panel.
+    spawn.ts           Factories: unit / resource node / building / player / projectile.
+    economy.ts         Domain helpers: player lookup, drop-off / node search, approach tiles.
+    combat.ts          Combat helpers: enemy search, damage calc, apply-damage, reap-dead.
+    Game.ts            Owns world + map + occupancy + fog + systems + tick; setup; save/load.
+  main.ts              Bootstraps everything; wires loop, input, orders, placement, combat, HUD.
 ```
 
 ### Key design decisions (and where we diverge from AoE)
@@ -129,7 +130,10 @@ src/
 - **Construction is its own system + components.** A placed building is a `Building{complete:false}` + `Construction{progress,required}`; villagers carry a `Build` task; `BuildSystem` pours build points in and flips `complete` (removing `Construction`). Incomplete buildings don't provide pop, train, or accept drop-offs.
 - **Placement is pure view state.** `PlacementController` computes the ghost tile + validity (buildable terrain, clear footprint, affordable) and never mutates the world; `main` commits the placement (pay + spawn foundation + block occupancy) as a player command — same view/sim split as selection.
 - **One depth-sorted render pass (carried-over fix, now done).** Resources, buildings and units are merged into a single list keyed by world-Y (buildings by their front-tile centre) and drawn back-to-front, so a unit in front of a building draws in front and one behind is occluded. A single scalar key can't perfectly order against a multi-tile diamond footprint — good enough here; per-row banding is a later refinement if needed.
-- **Divergence — defensive structures & Archery Range deferred.** Phase 3 ships the economy buildings + Barracks/infantry per its deliverable ("build a base and an army"); Walls/Gates/Towers/Archery Range come with the combat/depth phases. There's also no cancel-after-place refund yet.
+- **Divergence — defensive structures deferred.** Phase 3 shipped the economy buildings + Barracks; Phase 4 adds the Archery Range. Walls/Gates/Towers come with later phases. There's still no cancel-after-place refund.
+- **Centralised death.** Combat and projectile systems only call `applyDamage` (subtract HP); a separate `DeathSystem` reaps 0-HP entities once per tick (freeing a dead building's occupancy). Nothing destroys entities mid-iteration, so the damage-dealing systems can't corrupt the query they're walking.
+- **Combat is intent + resolution split across systems.** `CombatSystem` decides (acquire/chase/attack) and sets Movement paths; `MovementSystem` walks; ranged attacks spawn a homing `Projectile` that `ProjectileSystem` flies and resolves. Damage = `max(1, attack − armor/pierce)` plus a small `DAMAGE_BONUS` counter table. All deterministic on the fixed tick.
+- **Fog of war is derived, not serialized.** A per-player `Fog` (visible + explored grids) is recomputed every tick by `FogSystem` from unit/building sight; the renderer hides enemy units outside current vision and remembers enemy buildings once explored. Like occupancy, it's rebuilt rather than saved (explored history resets on load — acceptable for now).
 
 ### Strictness / quality bar
 
@@ -143,7 +147,7 @@ Full TypeScript strict mode, plus `noUncheckedIndexedAccess`, `exactOptionalProp
 - **Phase 1 — Units & movement** ✅ (selection, A* pathfinding, move orders)
 - **Phase 2 — Economy** ✅ (resources, gathering, drop-off, train villagers, pop cap)
 - **Phase 3 — Buildings & construction** ✅ (placement UI, villager-built, Barracks + infantry)
-- Phase 4 — Combat (HP/armor, melee + ranged, projectiles, fog of war)
+- **Phase 4 — Combat** ✅ (HP/armor, melee + ranged, projectiles, attack-move, death, fog of war)
 - Phase 5 — Enemy AI, win/lose, match setup
 - Phase 6 — Tech tree, ages, minimap, control groups, save/load, audio, balance
 

@@ -10,13 +10,18 @@ import type { GridPoint } from "@/math/iso";
 import type { Vec2 } from "@/math/Vec2";
 import { DEFAULT_MAP_W, DEFAULT_MAP_H, SIM_SEED_OFFSET } from "@/config";
 import { Occupancy } from "@/map/Occupancy";
+import { Fog } from "@/map/Fog";
 import { MovementSystem } from "@/systems/MovementSystem";
 import { GatherSystem } from "@/systems/GatherSystem";
 import { BuildSystem } from "@/systems/BuildSystem";
+import { CombatSystem } from "@/systems/CombatSystem";
+import { ProjectileSystem } from "@/systems/ProjectileSystem";
 import { EconomySystem } from "@/systems/EconomySystem";
+import { DeathSystem } from "@/systems/DeathSystem";
+import { FogSystem } from "@/systems/FogSystem";
 import { spawnUnit, spawnResourceNode, spawnBuilding, spawnPlayer } from "@/game/spawn";
 import { canStand } from "@/pathfinding/astar";
-import { PLAYER_ID, CBuilding, type Building, type ResourceKind } from "@/game/components";
+import { PLAYER_ID, CBuilding, type Building, type ResourceKind, type UnitKind } from "@/game/components";
 
 export interface WorldBounds {
   minX: number;
@@ -58,6 +63,8 @@ export class Game {
   readonly seed: number;
   /** Tiles blocked by buildings (rebuilt on load; not serialized). */
   readonly occ: Occupancy;
+  /** Human player's fog of war (derived, recomputed each tick; not serialized). */
+  readonly fog: Fog;
   /** Simulation RNG — never use Math.random() in sim code, draw from this. */
   readonly rng: Random;
   /** Authoritative simulation time, in ticks. Part of the save snapshot. */
@@ -81,15 +88,26 @@ export class Game {
       this.occ = new Occupancy(this.map.width, this.map.height);
       this.setupEconomy();
     }
-    // Systems are logic, not state — recreated on load, never serialized.
-    // Order: gather + build (set paths, harvest, construct) → movement
-    // (consumes paths) → economy (population recount + training).
+    this.fog = new Fog(this.map.width, this.map.height);
+    // Systems are logic, not state — recreated on load, never serialized. Order:
+    // gather/build (set paths, harvest, construct) → combat (acquire/attack, set
+    // chase paths) → movement (consume paths) → projectiles (fly + impact) →
+    // death (reap 0-hp, free occupancy) → economy (pop + training) → fog (vision).
+    const fogSystem = new FogSystem(this.fog, PLAYER_ID);
     this.systems = [
       new GatherSystem(this.map, this.occ),
       new BuildSystem(this.map, this.occ),
+      new CombatSystem(this.map, this.occ),
       new MovementSystem(this.map, this.occ),
+      new ProjectileSystem(),
+      new DeathSystem(this.occ),
       new EconomySystem(this.map, this.occ),
+      fogSystem,
     ];
+    // Populate the fog once now: the first rendered frame runs before the first
+    // fixed tick, so without this the whole viewport (including our own town)
+    // would flash black for a frame — and stay black if a game is loaded paused.
+    fogSystem.update(this.world, 0);
   }
 
   /** Rebuild the occupancy grid from the world's building footprints. */
@@ -157,6 +175,27 @@ export class Game {
     // Three starting villagers on standable tiles ringing the Town Center.
     const spots = this.tilesAround(tc.tx, tc.ty, 3, 3, 3);
     for (const s of spots) spawnUnit(this.world, "villager", s.tx, s.ty, PLAYER_ID);
+
+    // Debug enemy force (owner 1) off to one side so combat is testable before
+    // Phase 5 brings a real AI opponent.
+    this.spawnSquad(["spearman", "spearman", "spearman", "archer", "archer"], tc.tx + 18, tc.ty, 1);
+  }
+
+  /** Place a squad of unit kinds on standable tiles spiralling out from (cx, cy). */
+  private spawnSquad(kinds: readonly UnitKind[], cx: number, cy: number, owner: number): void {
+    let i = 0;
+    for (let r = 0; r <= 10 && i < kinds.length; r++) {
+      for (let dy = -r; dy <= r && i < kinds.length; dy++) {
+        for (let dx = -r; dx <= r && i < kinds.length; dx++) {
+          if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+          if (!canStand(this.map, cx + dx, cy + dy, this.occ)) continue;
+          const k = kinds[i];
+          if (k === undefined) break;
+          spawnUnit(this.world, k, cx + dx, cy + dy, owner);
+          i++;
+        }
+      }
+    }
   }
 
   /** All tiles of a w×h block are in-bounds, standable, and unoccupied. */

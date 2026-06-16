@@ -151,6 +151,7 @@ function kindScale(kind: BuildingKind): number {
     case "town_center":
       return 1.35;
     case "barracks":
+    case "archery_range":
       return 1.3;
     case "house":
     case "lumber_camp":

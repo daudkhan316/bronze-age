@@ -1,6 +1,7 @@
 import type { Camera } from "@/render/Camera";
 import type { World } from "@/ecs/World";
 import type { Entity } from "@/ecs/types";
+import type { Fog } from "@/map/Fog";
 import type {
   Building,
   BuildingKind,
@@ -11,12 +12,14 @@ import type {
 import {
   CBuilding,
   CConstruction,
+  CProjectile,
   CResourceNode,
   CTransform,
   CUnit,
   NODE_AMOUNT,
+  PLAYER_ID,
 } from "@/game/components";
-import { gridToWorld } from "@/math/iso";
+import { gridToWorld, worldToTile } from "@/math/iso";
 
 /**
  * Unified, depth-sorted world renderer.
@@ -71,6 +74,7 @@ export function drawWorld(
   world: World,
   selectedUnits: ReadonlySet<Entity>,
   selectedBuilding: Entity | null,
+  fog: Fog,
 ): void {
   const z = camera.zoom;
   const marginPx = CULL_MARGIN_WORLD * z;
@@ -101,6 +105,9 @@ export function drawWorld(
   for (const [e, b] of world.query(CBuilding)) {
     const tr = world.get(e, CTransform);
     if (tr === undefined) continue;
+    // Enemy buildings are remembered: shown once their footprint is explored
+    // (they don't move), even when not currently in sight. Own buildings always.
+    if (b.owner !== PLAYER_ID && !fog.isExplored(b.tx + (b.w >> 1), b.ty + (b.h >> 1))) continue;
     const centre = camera.worldToScreen(tr.x, tr.y);
     if (!onScreen(centre)) continue;
 
@@ -126,6 +133,11 @@ export function drawWorld(
   for (const [e, tr] of world.query(CTransform)) {
     const unit = world.get(e, CUnit);
     if (unit === undefined) continue;
+    // Enemy units are only drawn while currently in sight (fog of war).
+    if (unit.owner !== PLAYER_ID) {
+      const ut = worldToTile(tr.x, tr.y);
+      if (!fog.isVisible(ut.tx, ut.ty)) continue;
+    }
     const a = camera.worldToScreen(tr.x, tr.y);
     if (!onScreen(a)) continue;
     const selected = selectedUnits.has(e);
@@ -141,6 +153,48 @@ export function drawWorld(
   drawables.sort((p, q) => (p.y !== q.y ? p.y - q.y : p.cat - q.cat));
 
   for (const d of drawables) d.draw();
+
+  // Projectiles fly above the ground, so draw them last (on top of everything),
+  // oriented toward their aim point.
+  for (const [e, p] of world.query(CProjectile)) {
+    const tr = world.get(e, CTransform);
+    if (tr === undefined) continue;
+    const s = camera.worldToScreen(tr.x, tr.y);
+    if (!onScreen(s)) continue;
+    const aimTr = p.target !== null ? world.get(p.target, CTransform) : undefined;
+    const aimX = aimTr !== undefined ? aimTr.x : p.gx;
+    const aimY = aimTr !== undefined ? aimTr.y : p.gy;
+    const aim = camera.worldToScreen(aimX, aimY);
+    drawArrow(ctx, s.sx, s.sy, Math.atan2(aim.sy - s.sy, aim.sx - s.sx), z);
+  }
+}
+
+/** A small arrow/dart at (sx, sy) pointing along `ang`. */
+function drawArrow(ctx: CanvasRenderingContext2D, sx: number, sy: number, ang: number, z: number): void {
+  const len = 11 * z;
+  const ux = Math.cos(ang);
+  const uy = Math.sin(ang);
+  ctx.save();
+  ctx.lineCap = "round";
+  ctx.strokeStyle = "#3a2a18";
+  ctx.lineWidth = Math.max(1, 1.7 * z);
+  ctx.beginPath();
+  ctx.moveTo(sx - ux * len, sy - uy * len);
+  ctx.lineTo(sx, sy);
+  ctx.stroke();
+  // Metal head: a small triangle at the tip.
+  const hl = 4.5 * z;
+  const hw = 2.6 * z;
+  const px = -uy;
+  const py = ux;
+  ctx.fillStyle = "#d8dde2";
+  ctx.beginPath();
+  ctx.moveTo(sx + ux * hl, sy + uy * hl);
+  ctx.lineTo(sx + px * hw, sy + py * hw);
+  ctx.lineTo(sx - px * hw, sy - py * hw);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
 }
 
 // ---------------------------------------------------------------------------
@@ -464,6 +518,9 @@ function kindPalette(kind: BuildingKind, owner: number): Palette {
     case "barracks":
       // Military red roof.
       return { body, shade, roof: "#8c3b34" };
+    case "archery_range":
+      // Fletcher's deep green roof.
+      return { body, shade, roof: "#3f6b46" };
     case "house":
       // Warm thatch/terracotta roof.
       return { body, shade, roof: "#c08a4a" };
@@ -487,6 +544,7 @@ function kindScale(kind: BuildingKind): number {
     case "town_center":
       return 1.35;
     case "barracks":
+    case "archery_range":
       return 1.3;
     case "house":
     case "lumber_camp":
@@ -681,6 +739,8 @@ function drawUnit(
 
   if (unit.kind === "spearman") {
     drawSpearman(ctx, sx, sy, r, unit.owner);
+  } else if (unit.kind === "archer") {
+    drawArcher(ctx, sx, sy, r, unit.owner);
   } else {
     drawVillager(ctx, sx, sy, r, unit.owner);
   }
@@ -843,6 +903,66 @@ function drawSpearman(
   ctx.stroke();
 
   // Helmeted head: a circle with a small crest notch above the torso.
+  const headR = r * 0.42;
+  const headCy = torsoTop - headR * 0.5;
+  ctx.beginPath();
+  ctx.arc(sx, headCy, headR, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.restore();
+}
+
+/**
+ * Archer: a lean villager-like body holding a bow (a brown arc with a pale
+ * string) out to one side — clearly a ranged soldier, distinct from villager
+ * and spearman.
+ */
+function drawArcher(
+  ctx: CanvasRenderingContext2D,
+  sx: number,
+  sy: number,
+  r: number,
+  owner: number,
+): void {
+  ctx.save();
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
+
+  // Bow FIRST, held to the left: a brown arc bowed away from the body.
+  const bowX = sx - r * 0.6;
+  const bowTopY = sy - r * 1.85;
+  const bowBotY = sy + r * 0.1;
+  ctx.strokeStyle = "#7a5a33";
+  ctx.lineWidth = Math.max(1, r * 0.16);
+  ctx.beginPath();
+  ctx.moveTo(bowX, bowTopY);
+  ctx.quadraticCurveTo(bowX - r * 0.75, (bowTopY + bowBotY) / 2, bowX, bowBotY);
+  ctx.stroke();
+  // Bowstring: a straight line tip to tip.
+  ctx.strokeStyle = "#e6e6e6";
+  ctx.lineWidth = Math.max(0.8, r * 0.06);
+  ctx.beginPath();
+  ctx.moveTo(bowX, bowTopY);
+  ctx.lineTo(bowX, bowBotY);
+  ctx.stroke();
+
+  // Lean torso, narrower than the villager.
+  const fill = ownerColor(owner);
+  const outline = ownerOutline(owner);
+  ctx.fillStyle = fill;
+  ctx.strokeStyle = outline;
+  ctx.lineWidth = Math.max(1, r * 0.14);
+  const torsoW = r * 0.7;
+  const torsoH = r * 1.55;
+  const torsoBottom = sy + r * 0.15;
+  const torsoTop = torsoBottom - torsoH;
+  ctx.beginPath();
+  roundedRect(ctx, sx - torsoW / 2, torsoTop, torsoW, torsoH, torsoW * 0.5);
+  ctx.fill();
+  ctx.stroke();
+
+  // Hooded head.
   const headR = r * 0.42;
   const headCy = torsoTop - headR * 0.5;
   ctx.beginPath();

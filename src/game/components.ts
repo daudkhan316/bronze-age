@@ -35,7 +35,7 @@ export interface Movement {
   stuck: number;
 }
 
-export type UnitKind = "villager" | "spearman";
+export type UnitKind = "villager" | "spearman" | "archer";
 
 /** Marks an entity as a unit (selectable, commandable, collidable). */
 export interface Unit {
@@ -71,6 +71,8 @@ export interface UnitDef {
   range: number;
   /** Seconds between attacks. */
   attackCooldown: number;
+  /** Vision radius in tiles (fog of war). */
+  sight: number;
   cost: Partial<Record<ResourceKind, number>>;
   trainTicks: number;
   trainedAt: BuildingKind;
@@ -79,13 +81,18 @@ export interface UnitDef {
 export const UNIT_STATS: Record<UnitKind, UnitDef> = {
   villager: {
     speed: 55, radius: 11, hp: 25,
-    attack: 3, armor: 0, pierceArmor: 0, range: 0, attackCooldown: 2,
+    attack: 3, armor: 0, pierceArmor: 0, range: 0, attackCooldown: 2, sight: 4,
     cost: { food: 50 }, trainTicks: 40, trainedAt: "town_center",
   },
   spearman: {
     speed: 50, radius: 11, hp: 45,
-    attack: 6, armor: 0, pierceArmor: 0, range: 0, attackCooldown: 2,
+    attack: 6, armor: 1, pierceArmor: 0, range: 0, attackCooldown: 2, sight: 5,
     cost: { food: 35, wood: 25 }, trainTicks: 55, trainedAt: "barracks",
+  },
+  archer: {
+    speed: 48, radius: 11, hp: 35,
+    attack: 4, armor: 0, pierceArmor: 0, range: 5, attackCooldown: 2.5, sight: 6,
+    cost: { wood: 25, gold: 45 }, trainTicks: 50, trainedAt: "archery_range",
   },
 };
 
@@ -114,6 +121,7 @@ export type BuildingKind =
   | "town_center"
   | "house"
   | "barracks"
+  | "archery_range"
   | "lumber_camp"
   | "mining_camp"
   | "mill";
@@ -228,16 +236,19 @@ export interface BuildingDef {
   accepts: readonly ResourceKind[];
   /** Unit kind this building trains when complete, or null. */
   trains: UnitKind | null;
+  /** Vision radius in tiles (fog of war). */
+  sight: number;
   label: string;
 }
 
 export const BUILDING_DEFS: Record<BuildingKind, BuildingDef> = {
-  town_center: { w: 3, h: 3, cost: {}, buildTicks: 0, maxHp: 600, pop: 5, accepts: ["food", "wood", "gold", "stone"], trains: "villager", label: "Town Center" },
-  house: { w: 2, h: 2, cost: { wood: 30 }, buildTicks: 50, maxHp: 200, pop: 5, accepts: [], trains: null, label: "House" },
-  barracks: { w: 3, h: 3, cost: { wood: 120 }, buildTicks: 120, maxHp: 500, pop: 0, accepts: [], trains: "spearman", label: "Barracks" },
-  lumber_camp: { w: 2, h: 2, cost: { wood: 80 }, buildTicks: 35, maxHp: 300, pop: 0, accepts: ["wood"], trains: null, label: "Lumber Camp" },
-  mining_camp: { w: 2, h: 2, cost: { wood: 80 }, buildTicks: 35, maxHp: 300, pop: 0, accepts: ["gold", "stone"], trains: null, label: "Mining Camp" },
-  mill: { w: 2, h: 2, cost: { wood: 80 }, buildTicks: 35, maxHp: 300, pop: 0, accepts: ["food"], trains: null, label: "Mill" },
+  town_center: { w: 3, h: 3, cost: {}, buildTicks: 0, maxHp: 600, pop: 5, accepts: ["food", "wood", "gold", "stone"], trains: "villager", sight: 7, label: "Town Center" },
+  house: { w: 2, h: 2, cost: { wood: 30 }, buildTicks: 50, maxHp: 200, pop: 5, accepts: [], trains: null, sight: 4, label: "House" },
+  barracks: { w: 3, h: 3, cost: { wood: 120 }, buildTicks: 120, maxHp: 500, pop: 0, accepts: [], trains: "spearman", sight: 5, label: "Barracks" },
+  archery_range: { w: 3, h: 3, cost: { wood: 175 }, buildTicks: 120, maxHp: 500, pop: 0, accepts: [], trains: "archer", sight: 5, label: "Archery Range" },
+  lumber_camp: { w: 2, h: 2, cost: { wood: 80 }, buildTicks: 35, maxHp: 300, pop: 0, accepts: ["wood"], trains: null, sight: 4, label: "Lumber Camp" },
+  mining_camp: { w: 2, h: 2, cost: { wood: 80 }, buildTicks: 35, maxHp: 300, pop: 0, accepts: ["gold", "stone"], trains: null, sight: 4, label: "Mining Camp" },
+  mill: { w: 2, h: 2, cost: { wood: 80 }, buildTicks: 35, maxHp: 300, pop: 0, accepts: ["food"], trains: null, sight: 4, label: "Mill" },
 };
 
 /** Build points one builder contributes per second (× dt per tick). */
@@ -246,9 +257,68 @@ export const BUILD_RATE = 20;
 export const BUILDABLE_KINDS: readonly BuildingKind[] = [
   "house",
   "barracks",
+  "archery_range",
   "lumber_camp",
   "mining_camp",
   "mill",
 ];
 /** Hard population ceiling regardless of houses. */
 export const MAX_POP = 200;
+
+// ---------------------------------------------------------------------------
+// Phase 4 — Combat
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-unit combat state. Every unit carries one. `target` is the entity being
+ * attacked (a unit or building of another owner); `ordered` distinguishes an
+ * explicit attack order (chase it down) from an auto-acquired target (dropped
+ * once out of aggro range). `attackMove` is the destination for an attack-move
+ * order — walk toward it, but engage enemies met en route.
+ */
+export interface Combat {
+  /** Seconds until this unit may attack again. */
+  cooldown: number;
+  target: number | null;
+  ordered: boolean;
+  attackMove: GridPoint | null;
+}
+
+/**
+ * An in-flight projectile (arrow). Has its own Transform for the current world
+ * position; this component carries flight + payload data. Homes on `target`'s
+ * live position, falling back to the snapshot point (gx, gy) if it dies.
+ */
+export interface Projectile {
+  target: number | null;
+  /** Fallback impact world point (target position at fire time). */
+  gx: number;
+  gy: number;
+  /** World units per second. */
+  speed: number;
+  /** Attacker's attack value and kind (for the counter-bonus at impact). */
+  attack: number;
+  attackerKind: UnitKind;
+  owner: number;
+}
+
+export const CCombat = defineComponent<Combat>("Combat");
+export const CProjectile = defineComponent<Projectile>("Projectile");
+
+/** Idle units auto-acquire enemies within this many tiles (Chebyshev). */
+export const AGGRO_RANGE = 5;
+/** Arrow flight speed (world units/sec). */
+export const PROJECTILE_SPEED = 320;
+/** How close (world units) a projectile must get to its target to impact. */
+export const PROJECTILE_HIT_DIST = 12;
+
+/**
+ * Counter bonus damage: attacker kind -> defender kind -> extra damage applied
+ * on top of the base (attack − armor) calc. Small but extensible (Phase 6 adds
+ * cavalry, etc.). Spearmen punch up against archers in melee; archers harry
+ * villagers.
+ */
+export const DAMAGE_BONUS: Partial<Record<UnitKind, Partial<Record<UnitKind, number>>>> = {
+  spearman: { archer: 3 },
+  archer: { villager: 2 },
+};

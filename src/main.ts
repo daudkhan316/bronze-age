@@ -15,6 +15,7 @@ import { worldToTile } from "@/math/iso";
 import { SelectionController } from "@/selection/SelectionController";
 import { PlacementController } from "@/placement/PlacementController";
 import { drawWorld } from "@/render/drawWorld";
+import { drawFog } from "@/render/drawFog";
 import { drawPlacementGhost } from "@/render/drawPlacement";
 import { findPath, canStand } from "@/pathfinding/astar";
 import {
@@ -23,6 +24,7 @@ import {
   CUnit,
   CGather,
   CBuild,
+  CCombat,
   CBuilding,
   CTrainQueue,
   PLAYER_ID,
@@ -35,6 +37,7 @@ import {
 } from "@/game/components";
 import { spawnBuilding } from "@/game/spawn";
 import { getPlayerState, resourceNodeAtTile } from "@/game/economy";
+import { spawnUnit } from "@/game/spawn";
 import type { GridPoint } from "@/math/iso";
 import type { Entity } from "@/ecs/types";
 
@@ -62,6 +65,8 @@ camera.y = center.y;
 
 let showGrid = false;
 let fps = 0;
+/** Attack-move cursor: armed by `F`, consumed by the next left-click. */
+let attackMoveArmed = false;
 
 function syncViewport(): void {
   renderer.resize();
@@ -117,7 +122,7 @@ function updateHud(): void {
   const onMap = game.map.inBounds(tx, ty);
   const tile = onMap ? game.map.get(tx, ty) : "—";
   hud.textContent =
-    `Bronze Age — Phase 3\n` +
+    `Bronze Age — Phase 4\n` +
     `fps   ${fps.toFixed(0)}\n` +
     `tick  ${game.tick}${loop.paused ? "  [PAUSED]" : ""}\n` +
     `zoom  ${camera.zoom.toFixed(2)}x\n` +
@@ -188,6 +193,11 @@ function issueRightClick(): void {
   const tile = worldToTile(wx, wy);
   if (!game.map.inBounds(tile.tx, tile.ty)) return;
 
+  const enemy = enemyAtTile(tile.tx, tile.ty);
+  if (enemy !== null) {
+    assignAttack(enemy);
+    return;
+  }
   const foundation = foundationAtTile(tile.tx, tile.ty);
   if (foundation !== null) {
     assignBuild(foundation);
@@ -199,6 +209,82 @@ function issueRightClick(): void {
   } else {
     issueMove(tile);
   }
+}
+
+/** Enemy unit on tile (tx,ty), or enemy building whose footprint covers it; else null. */
+function enemyAtTile(tx: number, ty: number): Entity | null {
+  for (const [e, u] of game.world.query(CUnit)) {
+    if (u.owner === PLAYER_ID) continue;
+    const tr = game.world.get(e, CTransform);
+    if (tr === undefined) continue;
+    const t = worldToTile(tr.x, tr.y);
+    // Only target an enemy unit the player can actually see (currently in sight).
+    if (t.tx === tx && t.ty === ty && game.fog.isVisible(tx, ty)) return e;
+  }
+  for (const [e, b] of game.world.query(CBuilding)) {
+    if (b.owner === PLAYER_ID) continue;
+    // Enemy buildings are remembered: targetable once their tile is explored.
+    if (tx >= b.tx && tx < b.tx + b.w && ty >= b.ty && ty < b.ty + b.h && game.fog.isExplored(tx, ty)) {
+      return e;
+    }
+  }
+  return null;
+}
+
+/** Order every selected player unit to attack `target` (CombatSystem chases it). */
+function assignAttack(target: Entity): void {
+  for (const e of selection.selected) {
+    const unit = game.world.get(e, CUnit);
+    const cb = game.world.get(e, CCombat);
+    const mv = game.world.get(e, CMovement);
+    if (unit === undefined || cb === undefined || mv === undefined || unit.owner !== PLAYER_ID) continue;
+    cancelTasks(e, mv);
+    cb.target = target;
+    cb.ordered = true;
+    cb.attackMove = null;
+  }
+}
+
+/** Order selected player units to attack-move toward a tile. */
+function issueAttackMove(goal: GridPoint): void {
+  for (const e of selection.selected) {
+    const unit = game.world.get(e, CUnit);
+    const cb = game.world.get(e, CCombat);
+    const mv = game.world.get(e, CMovement);
+    if (unit === undefined || cb === undefined || mv === undefined || unit.owner !== PLAYER_ID) continue;
+    cancelTasks(e, mv);
+    cb.target = null;
+    cb.ordered = false;
+    cb.attackMove = goal;
+  }
+}
+
+/** Clear a unit's gather/build tasks and current path (shared by all order types). */
+function cancelTasks(e: Entity, mv: { path: GridPoint[]; goal: GridPoint | null; stuck: number }): void {
+  mv.path = [];
+  mv.goal = null;
+  mv.stuck = 0;
+  if (game.world.has(e, CGather)) game.world.remove(e, CGather);
+  if (game.world.has(e, CBuild)) game.world.remove(e, CBuild);
+}
+
+/** Clear a unit's combat order (target + attack-move) — a manual order overrides it. */
+function clearCombatOrder(e: Entity): void {
+  const cb = game.world.get(e, CCombat);
+  if (cb !== undefined) {
+    cb.target = null;
+    cb.ordered = false;
+    cb.attackMove = null;
+  }
+}
+
+/** True if the player has at least one of their own units selected. */
+function hasSelectedUnit(): boolean {
+  for (const e of selection.selected) {
+    const u = game.world.get(e, CUnit);
+    if (u !== undefined && u.owner === PLAYER_ID) return true;
+  }
+  return false;
 }
 
 /** Assign every selected player villager to gather the given resource node. */
@@ -213,6 +299,7 @@ function assignGather(node: Entity, kind: ResourceKind): void {
     mv.goal = null;
     mv.stuck = 0;
     if (game.world.has(e, CBuild)) game.world.remove(e, CBuild);
+    clearCombatOrder(e);
     const existing = game.world.get(e, CGather);
     if (existing !== undefined) {
       existing.node = node;
@@ -237,9 +324,10 @@ function issueMove(goal: GridPoint): void {
     const mv = game.world.get(e, CMovement);
     if (tr === undefined || mv === undefined) continue;
 
-    // A manual move cancels any gathering / building task.
+    // A manual move cancels any gathering / building / combat order.
     if (game.world.has(e, CGather)) game.world.remove(e, CGather);
     if (game.world.has(e, CBuild)) game.world.remove(e, CBuild);
+    clearCombatOrder(e);
 
     const dest = dests[i] ?? goal;
     const start = worldToTile(tr.x, tr.y);
@@ -330,6 +418,7 @@ function assignBuild(target: Entity): void {
     mv.goal = null;
     mv.stuck = 0;
     if (game.world.has(e, CGather)) game.world.remove(e, CGather);
+    clearCombatOrder(e);
     const existing = game.world.get(e, CBuild);
     if (existing !== undefined) {
       existing.target = target;
@@ -355,7 +444,9 @@ function placeBuildingAtGhost(): boolean {
 
 /** Game layers over the terrain: depth-sorted world, marquee, placement ghost. */
 function drawOverlay(ctx: CanvasRenderingContext2D): void {
-  drawWorld(ctx, camera, game.world, selection.selected, selection.selectedBuilding);
+  drawWorld(ctx, camera, game.world, selection.selected, selection.selectedBuilding, game.fog);
+  // Fog veil sits over the world but under the selection/placement UI.
+  drawFog(ctx, camera, game.fog);
 
   const box = selection.getDragBox();
   if (box !== null) {
@@ -388,7 +479,11 @@ function updatePanel(): void {
   if (!(controls instanceof HTMLElement)) return;
   let html = "";
 
-  if (placement.isActive()) {
+  if (attackMoveArmed) {
+    html =
+      `<div class="panel-title">Attack-move</div>` +
+      `<div class="panel-hint">Left-click a destination · Right-click / Esc to cancel</div>`;
+  } else if (placement.isActive()) {
     const kind = placement.pendingKind();
     const label = kind !== null ? BUILDING_DEFS[kind].label : "";
     html =
@@ -445,11 +540,29 @@ const loop = new Loop({
         if (placed && !shift) placement.cancel(); // Shift keeps placing.
       }
     } else {
-      selection.update(input, camera, game.world);
-      // Don't fire an order with the stale selection while a marquee is live.
-      if (input.wasButtonPressed(2) && selection.getDragBox() === null) issueRightClick();
+      // Attack-move: press F (with units selected) to arm; next left-click sets it.
+      if (input.wasPressed("KeyF") && hasSelectedUnit()) attackMoveArmed = true;
+
+      if (attackMoveArmed) {
+        if (input.wasButtonPressed(2)) {
+          attackMoveArmed = false; // right-click cancels the armed cursor
+        } else if (input.wasButtonPressed(0)) {
+          const p = camera.screenToWorld(input.mouseX, input.mouseY);
+          const t = worldToTile(p.wx, p.wy);
+          if (game.map.inBounds(t.tx, t.ty)) issueAttackMove(t);
+          attackMoveArmed = false;
+        }
+      } else {
+        selection.update(input, camera, game.world);
+        // Don't fire an order with the stale selection while a marquee is live.
+        if (input.wasButtonPressed(2) && selection.getDragBox() === null) issueRightClick();
+      }
+
       if (input.wasPressed("KeyQ")) trainFromSelectedBuilding();
-      if (input.wasPressed("Escape")) selection.clear();
+      if (input.wasPressed("Escape")) {
+        if (attackMoveArmed) attackMoveArmed = false;
+        else selection.clear();
+      }
     }
 
     updatePanel();
@@ -493,6 +606,14 @@ Object.assign(window as unknown as Record<string, unknown>, {
   placement,
   getPlayer: () => getPlayerState(game.world, PLAYER_ID),
   queuedForPlayer: () => queuedForPlayer(PLAYER_ID),
+  spawn: (kind: "villager" | "spearman" | "archer", tx: number, ty: number, owner: number) =>
+    spawnUnit(game.world, kind, tx, ty, owner),
+  spawnBuilding: (kind: BuildingKind, owner: number, tx: number, ty: number) => {
+    const e = spawnBuilding(game.world, kind, owner, tx, ty);
+    const b = game.world.get(e, CBuilding);
+    if (b !== undefined) game.setBuildingOccupancy(b, true);
+    return e;
+  },
 });
 
 // On hot-reload, tear down the old loop and listeners so we don't stack a
