@@ -140,4 +140,11 @@ Full TypeScript strict mode, plus `noUncheckedIndexedAccess`, `exactOptionalProp
 - Phase 5 — Enemy AI, win/lose, match setup
 - Phase 6 — Tech tree, ages, minimap, control groups, save/load, audio, balance
 
-See [ASSETS.md](./ASSETS.md) for art/audio credits.
+## Project docs
+
+- [`CLAUDE.md`](./CLAUDE.md) — orientation + architecture invariants + how we work.
+- [`docs/PLAN.md`](./docs/PLAN.md) — design principles, method, and phase roadmap.
+- [`docs/PROGRESS.md`](./docs/PROGRESS.md) — living status: phases done/next, the
+  deferred-work backlog, and the next phase's task breakdown.
+- [`docs/PROMPT.md`](./docs/PROMPT.md) — the original brief.
+- [`ASSETS.md`](./ASSETS.md) — art/audio credits.
