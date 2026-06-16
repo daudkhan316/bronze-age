@@ -6,7 +6,7 @@ the next phase's task list. The original brief is in [`PROMPT.md`](PROMPT.md).
 **Update this file at the end of every phase**, commit, and push. It is written
 to be self-sufficient so work resumes cleanly in a fresh context.
 
-Last updated: end of **Phase 4**.
+Last updated: end of **Phase 5**.
 
 ## Status
 
@@ -17,8 +17,8 @@ Last updated: end of **Phase 4**.
 | 2 | Economy | ✅ | `6b29895` |
 | 3 | Buildings & construction | ✅ | `9b3ba20` |
 | 4 | Combat | ✅ | `af42910` |
-| 5 | Enemy AI + match flow | ⬜ **Next** | — |
-| 6 | Depth (tech/ages/minimap/audio/save UI) | ⬜ | — |
+| 5 | Enemy AI + match flow | ✅ | `59c0489` |
+| 6 | Depth (tech/ages/minimap/audio/save UI) | ⬜ **Next** | — |
 
 ## Commands
 
@@ -107,9 +107,22 @@ by parallel subagents (render agent's connection dropped — finished by hand).
 Review: 5 findings; major = melee couldn't reach a building's attack range (now
 measured to the nearest footprint tile).
 
-### Phase 5 — Enemy AI + match flow
-Rule-based AI (build-order state machine) that economies up + attacks; difficulty;
-win/lose (all buildings destroyed); match-setup screen.
+### Phase 5 — Enemy AI + match flow ✅ (`59c0489`)
+Per-tick `CommandBuffer` + authoritative `executeCommand` — EVERY sim write (human
+input AND AI) is a plain `Command` drained at tick start; re-validated on apply;
+serialized in the snapshot (determinism survives save/load). `AiSystem` (rule-based
+build order: balanced gather → houses → villagers → Barracks/Archery Range → army →
+attack at a difficulty threshold) enqueues the same commands the human does; cadence
+from serialized `AiMemory.ticks`, RNG-from-sim only, fog-limited targeting (nearest
+explored enemy building, else mirror-of-own-start sweep). Two players + per-player
+`Fog`; `MatchSystem` latches win/lose (defeated = zero buildings) into a singleton
+`Match`. `Lobby` (map/difficulty/resources/seed → `MatchConfig`) + a
+`menu → playing → gameover` app-state machine in `main.ts` with Victory/Defeat +
+Play again. Built by parallel subagents (AI brain, lobby) against frozen contracts.
+Review: 3 reviewers; rejected 4 non-bugs (disproven by the determinism test), fixed
+real ones — major = AI gather monoculture starved wood (now distributed
+food/wood/gold); plus builder de-dup, military cap counts queued, disengage halts
+survivors, match-end frame ordering, `#controls` guard.
 
 ### Phase 6 — Depth
 Tech tree + ages; more units/buildings/upgrades; minimap; control groups (Ctrl+1–9);
@@ -117,42 +130,55 @@ save/load UI; audio (CC0); balance pass.
 
 ## Deferred backlog (carry-over)
 
-- **[Phase 5]** **Win/lose + match setup** (player defeated when all buildings
-  destroyed). **Replace the debug enemy squad / console spawn hooks** with a real
-  owner-1 player + AI. **Owner-gate `CombatSystem` & `BuildSystem`** stances (e.g. a
-  move-only stance vs the current aggressive default) once a second player exists.
-  Route player UI commands through a per-tick command buffer so all sim writes land
-  on the deterministic tick (needed for AI/replay).
-- **[Phase 4+]** Cancel/refund a placed foundation + building destruction UX (combat
-  already destroys buildings + frees occupancy; no player-driven demolish/refund).
-- **[render]** Per-row building depth banding (single front-tile-centre key can mis-
-  sort a unit at a 3×3's far front tile); enemy-building fog gate uses one centre tile
-  rather than the whole footprint (cosmetic, sight ≫ footprint so near-unreachable).
+- **[done in P5]** Win/lose + match setup ✅; real owner-1 AI replacing the debug
+  squad ✅; per-tick command buffer ✅. Console `spawn`/`spawnBuilding` hooks remain
+  as debug aids (harmless; on `window`). **Owner stances** (move-only vs aggressive
+  auto-acquire) still not implemented — the human's default is always aggressive.
+- **[perf]** `footprintPlaceable` scans all resource nodes per footprint tile, and
+  the AI's `placeNear` spirals up to ~18 rings — fine at tested scales (ran clean on
+  48×48), but a node-tile index would make it O(1) for the 96×96 map. Same O(nodes)
+  pattern as `resourceNodeAtTile`.
+- **[save]** `GameSnapshot` doesn't store the `MatchConfig` (difficulty/start
+  resources) — the world already carries `Player.difficulty`/`AiMemory`, so a loaded
+  game plays correctly, but it can't *display* its own config. Add a `config` field if
+  a save/load UI needs it (Phase 6).
+- **[UX]** Command-buffer 1-tick lag: a placement ghost shows valid, the player
+  clicks, placement mode exits, but if resources drop within that tick the executor
+  silently no-ops the build (no foundation, no feedback). Rare (needs two spends in
+  one tick); add post-commit feedback or keep placement open until the foundation
+  appears.
+- **[AI]** No real scouting — a fog-blind AI marches on the mirror of its own start;
+  no lumber/mining/mill drop-off camps (slower long-haul gathering); army can park at
+  an empty rally tile until the next think re-issues. Tuning levers, not bugs.
+- **[Phase 4+]** Cancel/refund a placed foundation + player-driven demolish (combat
+  already destroys buildings + frees occupancy).
+- **[render]** Per-row building depth banding; enemy-building fog gate uses one centre
+  tile (cosmetic). **[fog]** explored history resets on load (per-player now).
 - **[Phase 6]** Projectiles snapshot `attack` only and resolve armor/counters vs the
   defender's live stats at impact — revisit if mutable/tech-modified armor lands.
-- **[perf]** A* scratch-array pooling; spatial-grid separation (both fine until crowds
-  grow). **[feel]** true formation movement (vs current distinct-tile spread).
+- **[perf]** A* scratch-array pooling; spatial-grid separation. **[feel]** true
+  formation movement (vs current distinct-tile spread).
 
-## Next up — Phase 5: Enemy AI + match flow
+## Next up — Phase 6: Depth
 
-Goal: **a full, beatable match.** Refine at start.
+Goal: **make the match richer and more replayable.** Refine at start — this is a
+grab-bag, so pick the highest-value slice first (suggest minimap + control groups +
+save/load UI, then tech/ages, then audio + balance). Reuse the command buffer for any
+new player actions; keep new sim state JSON-safe + serialized; stop & review per slice.
 
-- [ ] **Second player + match setup.** Replace the debug enemy squad with a real
-      owner-1 player (its own `Player` entity, Town Center, starting villagers). A
-      match-setup screen (map size, AI difficulty, starting resources) before the game.
-- [ ] **Rule-based AI (build-order state machine).** Per AI player: gather → build
-      houses/military buildings → train an army → attack the human. Difficulty tiers
-      tune timings/army size. Deterministic — draws from the sim RNG, runs in a system
-      (or per-tick), no `Math.random`. Reuse the existing order helpers (gather/build/
-      train/attack-move) rather than poking components directly where possible.
-- [ ] **Per-tick command buffer (foundation).** Route both player and AI intents
-      through a buffer consumed inside `fixedUpdate`, so every sim write is on the tick
-      (clears the deferred determinism item, enables replay later).
-- [ ] **Win/lose.** A player is defeated when all their buildings are destroyed; show a
-      victory/defeat overlay; end/restart flow.
-- [ ] **Fog/AI interaction.** The AI should act on its own visibility (or omniscient at
-      first, scouting later). Keep fog per-player (currently only the human's is built).
-- [ ] **Stances** (optional): a move-only vs aggressive toggle now that a real enemy
-      exists, so move orders don't always auto-divert.
-- [ ] **Save/load** round-trips; review → fix → verify in browser → update README +
-      this file → commit → push → stop.
+- [ ] **Minimap** — a corner overview (terrain + owned/enemy buildings + units within
+      fog), click-to-recenter / drag-to-pan the camera. Pure view; reads sim + fog.
+- [ ] **Control groups** (Ctrl+1–9 set, 1–9 recall) — view-state selection groups
+      (like selection itself; not serialized).
+- [ ] **Save/load UI** — buttons that `Game.serialize()` to a download / localStorage
+      and restore via `Game.deserialize`. Consider adding `MatchConfig` to the snapshot
+      so a loaded game can show its settings (see backlog).
+- [ ] **Tech tree + ages** — researchable upgrades at buildings (e.g. +attack/+armor,
+      faster gather) and an age advance that unlocks units/buildings. New data tables +
+      a research system + cost/time gating; modifiers applied to UNIT_STATS at use.
+- [ ] **More units/buildings/upgrades** — fill out the roster (cavalry counter,
+      defensive structures: walls/gates/towers — deferred since Phase 3).
+- [ ] **Audio (CC0)** — selection/command/combat SFX + ambient; credit in ASSETS.md.
+- [ ] **Balance pass** — tune costs/stats/AI thresholds; AI difficulty smoke-test.
+- [ ] Per slice: review → fix → verify in browser → update README + this file →
+      commit → push → stop.
