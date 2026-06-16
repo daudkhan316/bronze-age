@@ -9,6 +9,7 @@ import {
   CConstruction,
   CPlayer,
   CTrainQueue,
+  CTower,
   CCombat,
   CProjectile,
   UNIT_STATS,
@@ -16,6 +17,7 @@ import {
   BUILDING_DEFS,
   PROJECTILE_SPEED,
   type UnitKind,
+  type AttackerKind,
   type ResourceKind,
   type BuildingKind,
 } from "@/game/components";
@@ -52,7 +54,7 @@ export function spawnProjectile(
   gx: number,
   gy: number,
   attack: number,
-  attackerKind: UnitKind,
+  attackerKind: AttackerKind,
   owner: number,
 ): Entity {
   const e = world.createEntity();
@@ -121,6 +123,8 @@ export function spawnBuilding(
   }
   // Trainable buildings get a queue (only used once complete).
   if (def.trains !== null) world.add(e, CTrainQueue, { queued: 0, progress: 0 });
+  // The watch tower fires at enemies in range (TowerSystem), once complete.
+  if (kind === "watch_tower") world.add(e, CTower, { cooldown: 0 });
   return e;
 }
 
@@ -143,6 +147,8 @@ export function spawnPlayer(
     isAI: opts?.isAI ?? false,
     difficulty: opts?.difficulty ?? null,
     defeated: false,
+    age: 1,
+    techs: [],
   });
   return e;
 }

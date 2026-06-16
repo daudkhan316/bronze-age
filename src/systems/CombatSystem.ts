@@ -20,6 +20,7 @@ import {
   rangeToTarget,
 } from "@/game/combat";
 import { spawnProjectile } from "@/game/spawn";
+import { effectiveAttack } from "@/game/tech";
 import { worldToTile } from "@/math/iso";
 import type { GameMap } from "@/map/GameMap";
 import type { Occupancy } from "@/map/Occupancy";
@@ -108,8 +109,11 @@ export class CombatSystem implements System {
             mv.path.length = 0;
             mv.goal = null;
             if (cb.cooldown <= 0) {
+              // Effective attack folds in researched attack upgrades (Phase 6).
+              const atk = effectiveAttack(world, owner, unit.kind);
               if (ranged) {
-                // Fire a homing arrow; it resolves damage on impact.
+                // Fire a homing arrow; it resolves damage on impact (the
+                // upgraded attack is snapshotted onto the projectile here).
                 spawnProjectile(
                   world,
                   tr.x,
@@ -117,7 +121,7 @@ export class CombatSystem implements System {
                   cb.target,
                   tpos.x,
                   tpos.y,
-                  def.attack,
+                  atk,
                   unit.kind,
                   owner,
                 );
@@ -126,7 +130,7 @@ export class CombatSystem implements System {
                 applyDamage(
                   world,
                   cb.target,
-                  computeDamage(world, cb.target, def.attack, unit.kind, false),
+                  computeDamage(world, cb.target, atk, unit.kind, false),
                 );
               }
               cb.cooldown = def.attackCooldown;

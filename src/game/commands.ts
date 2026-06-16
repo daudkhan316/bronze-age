@@ -29,15 +29,19 @@ import {
   CBuilding,
   CResourceNode,
   CTrainQueue,
+  CResearch,
   BUILDING_DEFS,
   UNIT_STATS,
+  UPGRADE_DEFS,
   RESOURCE_KINDS,
   type BuildingKind,
   type UnitKind,
+  type UpgradeId,
   type ResourceKind,
   type PlayerState,
 } from "@/game/components";
 import { getPlayerState } from "@/game/economy";
+import { canResearch } from "@/game/tech";
 import { spawnBuilding } from "@/game/spawn";
 import { worldToTile } from "@/math/iso";
 import type { GridPoint } from "@/math/iso";
@@ -57,6 +61,7 @@ export type Command =
   | { type: "build"; owner: number; kind: BuildingKind; tx: number; ty: number; builders: number[] }
   | { type: "assignBuild"; owner: number; villagers: number[]; target: number }
   | { type: "train"; owner: number; building: number; unit: UnitKind }
+  | { type: "research"; owner: number; building: number; upgrade: UpgradeId }
   | { type: "stop"; owner: number; units: number[] };
 
 /** FIFO buffer of pending commands, drained once per tick. */
@@ -287,6 +292,7 @@ export function executeCommand(
       const ps = getPlayerState(world, cmd.owner);
       if (ps === undefined) return;
       const def = BUILDING_DEFS[cmd.kind];
+      if (ps.age < def.ageRequired) return; // building not unlocked in this age yet
       if (!footprintPlaceable(world, map, occ, cmd.kind, cmd.tx, cmd.ty)) return;
       if (!canAfford(ps, def.cost)) return;
       payCost(ps, def.cost);
@@ -350,6 +356,22 @@ export function executeCommand(
       if (ps.popUsed + queuedForPlayer(world, cmd.owner) >= ps.popCap) return;
       payCost(ps, cost);
       tq.queued += 1;
+      return;
+    }
+
+    case "research": {
+      const ps = getPlayerState(world, cmd.owner);
+      if (ps === undefined) return;
+      // Eligibility (kind/age/prereq/not-done/not-busy) is authoritative here.
+      if (!canResearch(world, cmd.owner, cmd.building, cmd.upgrade)) return;
+      const def = UPGRADE_DEFS[cmd.upgrade];
+      if (!canAfford(ps, def.cost)) return;
+      payCost(ps, def.cost);
+      world.add(cmd.building, CResearch, {
+        id: cmd.upgrade,
+        progress: 0,
+        required: def.researchTicks,
+      });
       return;
     }
 

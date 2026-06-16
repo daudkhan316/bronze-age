@@ -22,15 +22,20 @@ import {
   CTransform,
   CBuilding,
   CTrainQueue,
+  CResearch,
   PLAYER_ID,
   UNIT_STATS,
   BUILDING_DEFS,
   BUILDABLE_KINDS,
+  UPGRADE_DEFS,
+  AGE_NAMES,
   RESOURCE_KINDS,
   type ResourceKind,
   type BuildingKind,
+  type UpgradeId,
 } from "@/game/components";
 import { getPlayerState, getMatchState, resourceNodeAtTile } from "@/game/economy";
+import { availableResearch } from "@/game/tech";
 import { spawnUnit, spawnBuilding } from "@/game/spawn";
 import type { MatchConfig } from "@/game/match";
 import type { GridPoint } from "@/math/iso";
@@ -173,10 +178,13 @@ function updateHud(s: Session): void {
   const { tx, ty } = worldToTile(wx, wy);
   const onMap = s.game.map.inBounds(tx, ty);
   const tile = onMap ? s.game.map.get(tx, ty) : "—";
+  const p = getPlayerState(s.game.world, PLAYER_ID);
+  const ageName = p !== undefined ? (AGE_NAMES[p.age] ?? `Age ${p.age}`) : "—";
   hud.textContent =
-    `Bronze Age — Phase 5\n` +
+    `Bronze Age — Phase 6\n` +
     `fps   ${fps.toFixed(0)}\n` +
     `tick  ${s.game.tick}${loop.paused ? "  [PAUSED]" : ""}\n` +
+    `age   ${ageName}\n` +
     `zoom  ${s.camera.zoom.toFixed(2)}x\n` +
     `sel   ${s.selection.selected.size} unit(s)\n` +
     `tile  ${onMap ? `${tx},${ty} (${tile})` : "off-map"}\n` +
@@ -346,6 +354,13 @@ function trainFromSelectedBuilding(s: Session): void {
   s.game.commands.enqueue({ type: "train", owner: PLAYER_ID, building: be, unit: trains });
 }
 
+/** Enqueue a research command for the selected building (executor re-validates). */
+function researchFromSelectedBuilding(s: Session, id: UpgradeId): void {
+  const be = s.selection.selectedBuilding;
+  if (be === null) return;
+  s.game.commands.enqueue({ type: "research", owner: PLAYER_ID, building: be, upgrade: id });
+}
+
 /** The own incomplete building (foundation) covering tile (tx,ty), or null. */
 function foundationAtTile(s: Session, tx: number, ty: number): Entity | null {
   for (const [e, b] of s.game.world.query(CBuilding)) {
@@ -413,22 +428,39 @@ function updatePanel(s: Session): void {
       `<div class="panel-hint">Left-click to place · Right-click / Esc to cancel</div>` +
       `<button data-action="cancel-place">Cancel</button>`;
   } else if (s.selection.selectedBuilding !== null) {
-    const b = s.game.world.get(s.selection.selectedBuilding, CBuilding);
+    const be = s.selection.selectedBuilding;
+    const b = s.game.world.get(be, CBuilding);
     if (b !== undefined) {
       const def = BUILDING_DEFS[b.kind];
       html = `<div class="panel-title">${def.label}${b.complete ? "" : " — building…"}</div>`;
-      if (b.owner === PLAYER_ID && b.complete && def.trains !== null) {
-        const ukind = def.trains;
-        const ucost = UNIT_STATS[ukind].cost;
-        const ulabel = ukind.charAt(0).toUpperCase() + ukind.slice(1);
-        const disabled = canAfford(s, ucost) ? "" : "disabled";
-        html += `<button data-action="train" ${disabled}>Train ${ulabel} (${costLabel(ucost)})</button>`;
+      if (b.owner === PLAYER_ID && b.complete) {
+        if (def.trains !== null) {
+          const ukind = def.trains;
+          const ucost = UNIT_STATS[ukind].cost;
+          const ulabel = ukind.charAt(0).toUpperCase() + ukind.slice(1);
+          const disabled = canAfford(s, ucost) ? "" : "disabled";
+          html += `<button data-action="train" ${disabled}>Train ${ulabel} (${costLabel(ucost)})</button>`;
+        }
+        // Research (Phase 6): an in-progress label, else the available upgrades.
+        const research = s.game.world.get(be, CResearch);
+        if (research !== undefined) {
+          const pct = Math.floor((research.progress / research.required) * 100);
+          html += `<div class="panel-hint">Researching ${UPGRADE_DEFS[research.id].label} (${pct}%)</div>`;
+        } else {
+          for (const id of availableResearch(s.game.world, PLAYER_ID, be)) {
+            const ud = UPGRADE_DEFS[id];
+            const disabled = canAfford(s, ud.cost) ? "" : "disabled";
+            html += `<button data-action="research:${id}" ${disabled}>${ud.label} (${costLabel(ud.cost)})</button>`;
+          }
+        }
       }
     }
   } else if (hasSelectedVillager(s)) {
     html = `<div class="panel-title">Build</div>`;
+    const age = getPlayerState(s.game.world, PLAYER_ID)?.age ?? 1;
     for (const kind of BUILDABLE_KINDS) {
       const def = BUILDING_DEFS[kind];
+      if (def.ageRequired > age) continue; // not unlocked in this age yet — hide it
       const disabled = canAfford(s, def.cost) ? "" : "disabled";
       html += `<button data-action="build:${kind}" ${disabled}>${def.label} (${costLabel(def.cost)})</button>`;
     }
@@ -517,6 +549,7 @@ if (controls instanceof HTMLElement) {
     const action = btn.getAttribute("data-action") ?? "";
     if (action === "cancel-place") session.placement.cancel();
     else if (action === "train") trainFromSelectedBuilding(session);
+    else if (action.startsWith("research:")) researchFromSelectedBuilding(session, action.slice(9) as UpgradeId);
     else if (action.startsWith("build:")) session.placement.begin(action.slice(6) as BuildingKind);
     if (btn instanceof HTMLButtonElement) btn.blur();
   });

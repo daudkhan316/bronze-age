@@ -18,6 +18,7 @@ import {
   tileRangeToBuilding,
   approachTileForBuilding,
 } from "@/game/economy";
+import { gatherMultiplier } from "@/game/tech";
 import type { GridPoint } from "@/math/iso";
 import { worldToTile } from "@/math/iso";
 import type { GameMap } from "@/map/GameMap";
@@ -134,8 +135,10 @@ export class GatherSystem implements System {
             break;
           }
 
+          // Effective rate folds in the owner's researched gather upgrades (Phase 6).
+          const rate = GATHER_RATE * gatherMultiplier(world, owner);
           const take = Math.min(
-            GATHER_RATE * dt,
+            rate * dt,
             CARRY_CAPACITY - g.carrying,
             node.amount,
           );

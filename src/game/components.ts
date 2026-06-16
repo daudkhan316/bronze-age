@@ -127,7 +127,9 @@ export type BuildingKind =
   | "archery_range"
   | "lumber_camp"
   | "mining_camp"
-  | "mill";
+  | "mill"
+  | "blacksmith"
+  | "watch_tower";
 
 /**
  * A placed building, occupying a `w`×`h` block of tiles with origin (tx,ty).
@@ -191,6 +193,10 @@ export interface PlayerState {
   difficulty: Difficulty | null;
   /** Set once all this player's buildings are destroyed (lost the match). */
   defeated: boolean;
+  /** Current age (Phase 6): 1 = Stone, 2 = Bronze, 3 = Iron. */
+  age: number;
+  /** Researched upgrade ids (Phase 6). Plain string[] so it stays JSON-safe. */
+  techs: string[];
 }
 
 /**
@@ -278,26 +284,45 @@ export interface BuildingDef {
   trains: UnitKind | null;
   /** Vision radius in tiles (fog of war). */
   sight: number;
+  /** Minimum age required to build this (Phase 6); 1 = available from the start. */
+  ageRequired: number;
   label: string;
+  /**
+   * Defensive attack (watch_tower only): when present, the building fires at
+   * enemies in range (handled by TowerSystem). Absent for non-combat buildings.
+   */
+  attack?: number;
+  /** Attack range in tiles (towers). */
+  range?: number;
+  /** Seconds between shots (towers). */
+  attackCooldown?: number;
 }
 
 export const BUILDING_DEFS: Record<BuildingKind, BuildingDef> = {
-  town_center: { w: 3, h: 3, cost: {}, buildTicks: 0, maxHp: 600, pop: 5, accepts: ["food", "wood", "gold", "stone"], trains: "villager", sight: 7, label: "Town Center" },
-  house: { w: 2, h: 2, cost: { wood: 30 }, buildTicks: 50, maxHp: 200, pop: 5, accepts: [], trains: null, sight: 4, label: "House" },
-  barracks: { w: 3, h: 3, cost: { wood: 120 }, buildTicks: 120, maxHp: 500, pop: 0, accepts: [], trains: "spearman", sight: 5, label: "Barracks" },
-  archery_range: { w: 3, h: 3, cost: { wood: 175 }, buildTicks: 120, maxHp: 500, pop: 0, accepts: [], trains: "archer", sight: 5, label: "Archery Range" },
-  lumber_camp: { w: 2, h: 2, cost: { wood: 80 }, buildTicks: 35, maxHp: 300, pop: 0, accepts: ["wood"], trains: null, sight: 4, label: "Lumber Camp" },
-  mining_camp: { w: 2, h: 2, cost: { wood: 80 }, buildTicks: 35, maxHp: 300, pop: 0, accepts: ["gold", "stone"], trains: null, sight: 4, label: "Mining Camp" },
-  mill: { w: 2, h: 2, cost: { wood: 80 }, buildTicks: 35, maxHp: 300, pop: 0, accepts: ["food"], trains: null, sight: 4, label: "Mill" },
+  town_center: { w: 3, h: 3, cost: {}, buildTicks: 0, maxHp: 600, pop: 5, accepts: ["food", "wood", "gold", "stone"], trains: "villager", sight: 7, ageRequired: 1, label: "Town Center" },
+  house: { w: 2, h: 2, cost: { wood: 30 }, buildTicks: 50, maxHp: 200, pop: 5, accepts: [], trains: null, sight: 4, ageRequired: 1, label: "House" },
+  barracks: { w: 3, h: 3, cost: { wood: 120 }, buildTicks: 120, maxHp: 500, pop: 0, accepts: [], trains: "spearman", sight: 5, ageRequired: 1, label: "Barracks" },
+  archery_range: { w: 3, h: 3, cost: { wood: 175 }, buildTicks: 120, maxHp: 500, pop: 0, accepts: [], trains: "archer", sight: 5, ageRequired: 1, label: "Archery Range" },
+  lumber_camp: { w: 2, h: 2, cost: { wood: 80 }, buildTicks: 35, maxHp: 300, pop: 0, accepts: ["wood"], trains: null, sight: 4, ageRequired: 1, label: "Lumber Camp" },
+  mining_camp: { w: 2, h: 2, cost: { wood: 80 }, buildTicks: 35, maxHp: 300, pop: 0, accepts: ["gold", "stone"], trains: null, sight: 4, ageRequired: 1, label: "Mining Camp" },
+  mill: { w: 2, h: 2, cost: { wood: 80 }, buildTicks: 35, maxHp: 300, pop: 0, accepts: ["food"], trains: null, sight: 4, ageRequired: 1, label: "Mill" },
+  blacksmith: { w: 3, h: 3, cost: { wood: 150 }, buildTicks: 100, maxHp: 500, pop: 0, accepts: [], trains: null, sight: 4, ageRequired: 2, label: "Blacksmith" },
+  watch_tower: { w: 2, h: 2, cost: { wood: 50, stone: 100 }, buildTicks: 80, maxHp: 400, pop: 0, accepts: [], trains: null, sight: 8, ageRequired: 2, label: "Watch Tower", attack: 5, range: 6, attackCooldown: 1.5 },
 };
 
 /** Build points one builder contributes per second (× dt per tick). */
 export const BUILD_RATE = 20;
-/** Building kinds the player can place (the Town Center is the pre-placed start). */
+/**
+ * Building kinds the player can place (the Town Center is the pre-placed start).
+ * The Build menu further filters these by the player's current age
+ * (`ageRequired`), so age-2 buildings only appear once you've advanced.
+ */
 export const BUILDABLE_KINDS: readonly BuildingKind[] = [
   "house",
   "barracks",
   "archery_range",
+  "blacksmith",
+  "watch_tower",
   "lumber_camp",
   "mining_camp",
   "mill",
@@ -325,6 +350,12 @@ export interface Combat {
 }
 
 /**
+ * Who fired an attack, for the counter-bonus lookup. A `"tower"` (a building
+ * attacker, Phase 6) has no unit kind and gets no counter bonus.
+ */
+export type AttackerKind = UnitKind | "tower";
+
+/**
  * An in-flight projectile (arrow). Has its own Transform for the current world
  * position; this component carries flight + payload data. Homes on `target`'s
  * live position, falling back to the snapshot point (gx, gy) if it dies.
@@ -338,7 +369,7 @@ export interface Projectile {
   speed: number;
   /** Attacker's attack value and kind (for the counter-bonus at impact). */
   attack: number;
-  attackerKind: UnitKind;
+  attackerKind: AttackerKind;
   owner: number;
 }
 
@@ -358,7 +389,93 @@ export const PROJECTILE_HIT_DIST = 12;
  * cavalry, etc.). Spearmen punch up against archers in melee; archers harry
  * villagers.
  */
-export const DAMAGE_BONUS: Partial<Record<UnitKind, Partial<Record<UnitKind, number>>>> = {
+export const DAMAGE_BONUS: Partial<Record<AttackerKind, Partial<Record<UnitKind, number>>>> = {
   spearman: { archer: 3 },
   archer: { villager: 2 },
 };
+
+// ---------------------------------------------------------------------------
+// Phase 6 — Tech tree & ages
+// ---------------------------------------------------------------------------
+
+/** Ages: 1 = Stone, 2 = Bronze, 3 = Iron. The match starts in age 1. */
+export const MAX_AGE = 3;
+export const AGE_NAMES: Record<number, string> = { 1: "Stone Age", 2: "Bronze Age", 3: "Iron Age" };
+
+export type UpgradeId =
+  | "advance_bronze"
+  | "advance_iron"
+  | "forging"
+  | "scale_armor"
+  | "fletching"
+  | "wheelbarrow"
+  | "iron_casting";
+
+export type UpgradeStat = "attack" | "armor" | "pierceArmor" | "gatherRate";
+/** Which units/buildings an upgrade applies to. */
+export type UpgradeScope =
+  | "all"
+  | "military"
+  | "melee"
+  | "ranged"
+  | "villager"
+  | "tower"
+  | "gather";
+
+/**
+ * One stat effect of a researched upgrade. `add` is a flat addend, except for
+ * `gatherRate` where it's a fractional multiplier (0.25 = +25%).
+ */
+export interface UpgradeEffect {
+  stat: UpgradeStat;
+  scope: UpgradeScope;
+  add: number;
+}
+
+export interface UpgradeDef {
+  id: UpgradeId;
+  label: string;
+  /** The building kind it's researched at. */
+  building: BuildingKind;
+  /** Minimum age to research it. */
+  ageRequired: number;
+  cost: Partial<Record<ResourceKind, number>>;
+  /** Research time in ticks. */
+  researchTicks: number;
+  /** Prerequisite upgrade that must be researched first, or null. */
+  requires: UpgradeId | null;
+  /** Stat effects applied on completion (empty for a pure age advance). */
+  effects: readonly UpgradeEffect[];
+  /** If set, completing this advances the player to this age. */
+  setsAge?: number;
+}
+
+/**
+ * The full tech tree (Phase 6). Two age advances (at the Town Center) plus a
+ * focused upgrade set at the Blacksmith + Town Center. Data-driven: adding a tech
+ * is a table edit. `requires` chains stacking lines (forging → iron_casting).
+ */
+export const UPGRADE_DEFS: Record<UpgradeId, UpgradeDef> = {
+  advance_bronze: { id: "advance_bronze", label: "Advance to Bronze Age", building: "town_center", ageRequired: 1, cost: { food: 400 }, researchTicks: 200, requires: null, effects: [], setsAge: 2 },
+  advance_iron: { id: "advance_iron", label: "Advance to Iron Age", building: "town_center", ageRequired: 2, cost: { food: 600, gold: 300 }, researchTicks: 300, requires: "advance_bronze", effects: [], setsAge: 3 },
+  forging: { id: "forging", label: "Forging (+1 melee atk)", building: "blacksmith", ageRequired: 2, cost: { food: 150 }, researchTicks: 120, requires: null, effects: [{ stat: "attack", scope: "melee", add: 1 }] },
+  scale_armor: { id: "scale_armor", label: "Scale Armor (+1 armor)", building: "blacksmith", ageRequired: 2, cost: { food: 100, gold: 50 }, researchTicks: 120, requires: null, effects: [{ stat: "armor", scope: "military", add: 1 }, { stat: "pierceArmor", scope: "military", add: 1 }] },
+  fletching: { id: "fletching", label: "Fletching (+1 ranged atk)", building: "blacksmith", ageRequired: 2, cost: { wood: 120, gold: 50 }, researchTicks: 120, requires: null, effects: [{ stat: "attack", scope: "ranged", add: 1 }] },
+  wheelbarrow: { id: "wheelbarrow", label: "Wheelbarrow (+25% gather)", building: "town_center", ageRequired: 2, cost: { food: 175, wood: 50 }, researchTicks: 150, requires: null, effects: [{ stat: "gatherRate", scope: "gather", add: 0.25 }] },
+  iron_casting: { id: "iron_casting", label: "Iron Casting (+1 melee atk)", building: "blacksmith", ageRequired: 3, cost: { food: 220, gold: 120 }, researchTicks: 150, requires: "forging", effects: [{ stat: "attack", scope: "melee", add: 1 }] },
+};
+
+/** A research in progress at a building (one at a time, like a train queue). */
+export interface Research {
+  id: UpgradeId;
+  progress: number;
+  required: number;
+}
+
+/** Watch-tower attack cooldown state (the building-attacker analogue of Combat). */
+export interface Tower {
+  cooldown: number;
+}
+
+export const CResearch = defineComponent<Research>("Research");
+export const CTower = defineComponent<Tower>("Tower");

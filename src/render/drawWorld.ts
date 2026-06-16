@@ -533,6 +533,12 @@ function kindPalette(kind: BuildingKind, owner: number): Palette {
     case "mill":
       // Wheat gold roof.
       return { body, shade, roof: "#caa83f" };
+    case "blacksmith":
+      // Dark iron/soot roof.
+      return { body, shade, roof: "#4a4f57" };
+    case "watch_tower":
+      // Stone tower with a slate cap.
+      return { body: "#9aa0a6", shade: "#767c82", roof: "#55606a" };
     default:
       return assertNeverPalette(kind);
   }
@@ -545,7 +551,11 @@ function kindScale(kind: BuildingKind): number {
       return 1.35;
     case "barracks":
     case "archery_range":
+    case "blacksmith":
       return 1.3;
+    case "watch_tower":
+      // Tall and narrow — the tower silhouette.
+      return 1.8;
     case "house":
     case "lumber_camp":
     case "mining_camp":

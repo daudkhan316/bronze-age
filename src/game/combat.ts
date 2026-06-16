@@ -4,10 +4,10 @@ import {
   CUnit,
   CBuilding,
   CTransform,
-  UNIT_STATS,
   DAMAGE_BONUS,
-  type UnitKind,
+  type AttackerKind,
 } from "@/game/components";
+import { effectiveArmor } from "@/game/tech";
 import type { Occupancy } from "@/map/Occupancy";
 import { worldToTile } from "@/math/iso";
 
@@ -111,15 +111,15 @@ export function computeDamage(
   world: World,
   target: Entity,
   attack: number,
-  attackerKind: UnitKind,
+  attackerKind: AttackerKind,
   ranged: boolean,
 ): number {
   const u = world.get(target, CUnit);
   let mitigation = 0;
   let bonus = 0;
   if (u !== undefined) {
-    const def = UNIT_STATS[u.kind];
-    mitigation = ranged ? def.pierceArmor : def.armor;
+    // Effective armor includes the defender's researched armor upgrades (Phase 6).
+    mitigation = effectiveArmor(world, u.owner, u.kind, ranged);
     bonus = DAMAGE_BONUS[attackerKind]?.[u.kind] ?? 0;
   }
   return Math.max(1, attack - mitigation) + bonus;

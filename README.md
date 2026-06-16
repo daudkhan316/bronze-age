@@ -21,13 +21,13 @@ Requires Node 18+ (developed on Node 20). A modern desktop browser (Chrome/Safar
 
 ---
 
-## Current status — Phase 5: Enemy AI + match flow ✅
+## Current status — Phase 6 (Depth): Tech tree & ages ✅
 
-A full, beatable **1v1 match against a computer opponent**. A pre-game **lobby**
-(map size · AI difficulty · starting resources · seed) sets up the game; a
-rule-based AI economies up, trains an army and attacks; the match ends in
-**Victory / Defeat** when one side's buildings are all destroyed — on top of the
-Phase 0–4 economy, base-building and combat.
+The first slice of Phase 6: **research and ages** layered on the full Phase 5
+match. Advance **Stone → Bronze → Iron**, build a **Blacksmith** to research
+upgrades that make your units measurably stronger, and a **Watch Tower** that
+shoots back. The AI techs up too. _(Phase 6 is a grab-bag built in slices —
+minimap, control groups, save/load UI, audio and balance come in later slices.)_
 
 ### Controls
 
@@ -36,26 +36,29 @@ Phase 0–4 economy, base-building and combat.
 | **Lobby** → Start match | Choose map size, AI difficulty, starting resources, seed |
 | **Left-click** unit / building | Select unit, or single-select a building |
 | **Left-drag** box · **double-click** · **Shift** | Box-select · select by type · add/toggle |
-| Select a villager → **Build** menu | Pick a building to place (ghost → left-click) |
+| Select a villager → **Build** menu | Place a building (age-gated; ghost → left-click) |
 | **Right-click** an enemy | Attack it (your units chase it down) |
 | **F** then left-click | Attack-move: advance to a point, engaging enemies en route |
 | **Right-click** foundation / resource / ground | Build / gather / move |
-| Select a building → panel / `Q` | Train its unit (Barracks → spearman, Archery Range → archer) |
+| Select Town Center → panel | Train villager · **Advance Age** · **Wheelbarrow** (gather upgrade) |
+| Select Blacksmith → panel | Research **Forging / Scale Armor / Fletching / Iron Casting** |
 | `W` `A` `S` `D` / Arrows / edge / middle-drag | Pan · wheel: zoom |
 | `Space` pause · `G` grid · `Esc` cancel | |
 
-Each side starts with 3 villagers, a Town Center and 2 houses, in opposite
-quadrants. Boom your economy, build a **Barracks** (spearmen) and **Archery
-Range** (archers), and destroy every enemy building before the AI destroys yours.
-Idle military auto-retaliate when enemies wander into range; villagers don't.
+Each side starts in the **Stone Age** with 3 villagers, a Town Center and 2
+houses. Boom your economy, **advance to the Bronze Age** (at the Town Center) to
+unlock the Blacksmith + Watch Tower, research upgrades, and crush the enemy before
+it out-tech-and-out-fights you.
 
-> **The AI** gathers a balanced resource mix, builds houses + military buildings,
-> masses an army to a difficulty-tuned threshold, then attacks — marching on your
-> base through its own **fog of war** (Easy / Medium / Hard tune economy size,
-> army size and reaction speed). **Combat:** damage = `max(1, attack − armor)`
-> (melee) or `− pierce-armor` (ranged) plus counter bonuses (spearmen beat
-> archers; archers harry villagers). **Win/lose:** lose all your buildings and
-> it's over — the result screen offers _Play again_.
+> **Teching:** Ages gate new buildings/upgrades and cost resources + research
+> time at the Town Center. Blacksmith upgrades apply **per-player** and are read
+> at the point of use — Forging/Iron Casting raise melee attack, Fletching raises
+> ranged (archers _and_ towers), Scale Armor raises military armor, Wheelbarrow
+> speeds gathering. **The AI** banks for the Bronze age, builds a Blacksmith +
+> Watch Towers and researches upgrades (difficulty tunes how far it techs).
+> **Combat:** damage = `max(1, attack − armor)` (melee) or `− pierce-armor`
+> (ranged) plus counter bonuses; effective stats now include research. **Win/lose:**
+> lose all your buildings and it's over — the result screen offers _Play again_.
 
 ---
 
@@ -92,10 +95,12 @@ src/
     CombatSystem.ts    Acquire/chase/attack (melee + ranged) + attack-move.
     ProjectileSystem.ts  Arrows home on targets and resolve impact damage.
     DeathSystem.ts     Reaps 0-hp entities each tick; frees building occupancy.
+    ResearchSystem.ts  Advances building research; applies upgrades/ages on completion.
+    TowerSystem.ts     Watch towers auto-fire at the nearest enemy in range.
     MatchSystem.ts     Win/lose: marks players defeated, latches the match result.
     EconomySystem.ts   Population recount + building training queues.
     FogSystem.ts       Recomputes one player's visibility from unit/building sight.
-    AiSystem.ts        Computer opponent: rule-based build-order brain (enqueues commands).
+    AiSystem.ts        Computer opponent: rule-based build-order + tech brain (enqueues commands).
   ui/
     Lobby.ts           VIEW-state pre-game match-setup form → MatchConfig.
   selection/
@@ -113,9 +118,10 @@ src/
   input/
     Input.ts           Keyboard/mouse/wheel state, per-frame deltas, edge-scroll.
   game/
-    components.ts      All components + unit/building data tables (plain, JSON-safe).
+    components.ts      All components + unit/building/upgrade data tables (plain, JSON-safe).
     commands.ts        Per-tick command buffer + authoritative executor (all sim writes).
     match.ts           MatchConfig + presets (map sizes, difficulties, resource levels, AI params).
+    tech.ts            Per-player effective-stat lookups + research eligibility (ages/upgrades).
     spawn.ts           Factories: unit / resource node / building / player / projectile.
     economy.ts         Domain helpers: player/match lookup, drop-off / node search, approach tiles.
     combat.ts          Combat helpers: enemy search, damage calc, apply-damage, reap-dead.
@@ -150,6 +156,11 @@ src/
 - **Win/lose is a sim fact, latched once.** `MatchSystem` marks a player defeated when they own zero buildings (foundations count — you're alive while any structure stands) and latches the survivor into a singleton `Match` component; the result is deterministic and serialized. The view reads it to raise the Victory/Defeat overlay.
 - **Match setup + app state are pure view.** A `menu → playing → gameover` state machine in `main.ts` shows the `Lobby` (a `MatchConfig` form), builds a fresh `Game` from it, and on a decided match shows the result screen with _Play again_. `Game` is constructed from a `MatchConfig` (seed, map size, difficulty, starting resources) and spawns both bases in opposite quadrants.
 - **Divergence — AI knows roughly where you start.** Rather than a full scouting layer, a fog-limited AI that has discovered nothing yet commits to a direction (the mirror of its own base across the map centre, which is your start region) and finds you by marching. Honest-ish and standard for a low-tier RTS AI; real scouting is a later refinement.
+- **Tech is per-player state read at the point of use.** Each player carries an `age` + a `techs` list on its `Player` component; a small `tech.ts` computes *effective* stats (attack/armor/gather-rate) by folding the researched upgrades over the base tables, and combat/gather/tower code call those instead of the raw `UNIT_STATS`. So a research result changes outcomes everywhere without mutating the shared data tables, and it serializes for free. Upgrades are data-driven (`UPGRADE_DEFS`) with a scope (melee/ranged/military/villager/tower/gather) and a prerequisite chain.
+- **Research + ages reuse the training machinery + command buffer.** A building under research carries a `Research{progress,required}` component that `ResearchSystem` advances exactly like a train queue, applying the upgrade (or bumping the age) on completion; ages just gate which buildings/upgrades are available (`ageRequired`), checked in the build/research executor *and* the UI. Both age advances and upgrades are issued as a single `research` command, so the AI and the human share the path. (`ResearchSystem` runs before `DeathSystem` so a tech that finishes on the same tick its building dies still applies.)
+- **Buildings can fight (Watch Tower).** A new `TowerSystem` gives complete towers the building-attacker analogue of `CombatSystem`: find the nearest enemy in range, fire an arrow on cooldown. Towers cost stone (its first real use) and fire as a distinct `"tower"` attacker kind — ranged (pierce-armor) resolution, but no unit counter-bonus.
+- **AI teches by *banking*.** Continuous unit production keeps resources near zero, so the AI would never afford a 400-food age. It instead *pauses new unit training* to bank for its next tech goal (Bronze → Blacksmith → a couple of upgrades → Iron for harder AIs), its standing army still fighting meanwhile, then resumes — a deliberate "tech up" decision rather than a passive surplus.
+- **Divergence — defensive structures partial.** This slice adds the Watch Tower; walls/gates (drag-placement + open/close) and new age-gated units are deferred to a later Phase 6 slice.
 
 ### Strictness / quality bar
 
@@ -165,7 +176,7 @@ Full TypeScript strict mode, plus `noUncheckedIndexedAccess`, `exactOptionalProp
 - **Phase 3 — Buildings & construction** ✅ (placement UI, villager-built, Barracks + infantry)
 - **Phase 4 — Combat** ✅ (HP/armor, melee + ranged, projectiles, attack-move, death, fog of war)
 - **Phase 5 — Enemy AI + match flow** ✅ (lobby, rule-based AI, per-tick command buffer, win/lose)
-- Phase 6 — Tech tree, ages, minimap, control groups, save/load UI, audio, balance
+- **Phase 6 — Depth** (built in slices): **tech tree & ages** ✅ (Blacksmith upgrades, Watch Tower, AI teches up) · _next slices:_ minimap, control groups, save/load UI, audio, balance, walls/gates
 
 ## Project docs
 

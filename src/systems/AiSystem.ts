@@ -19,14 +19,17 @@ import {
   CTrainQueue,
   BUILDING_DEFS,
   UNIT_STATS,
+  UPGRADE_DEFS,
   RESOURCE_KINDS,
   type AiMemory,
   type PlayerState,
   type Building,
   type BuildingKind,
   type ResourceKind,
+  type UpgradeId,
 } from "@/game/components";
 import { findNearestNodeOfKind } from "@/game/economy";
+import { canResearch } from "@/game/tech";
 import { AI_PARAMS, type AiParams } from "@/game/match";
 import { worldToTile } from "@/math/iso";
 
@@ -58,7 +61,9 @@ type GatherKind = "food" | "wood" | "gold";
  *   5. train military from each up to maxMilitaryPerType,
  *   6. once the army reaches armyThreshold, attackMove the whole army at the
  *      nearest explored enemy building (or sweep the mirrored TC tile if nothing
- *      is discovered yet).
+ *      is discovered yet),
+ *   7. tech up (Phase 6): advance ages, build a Blacksmith + Watch Towers, and
+ *      research Blacksmith/Town-Center upgrades — see maybeTech.
  */
 export class AiSystem implements System {
   readonly name = "ai";
@@ -109,11 +114,17 @@ export class AiSystem implements System {
     let tc: { e: Entity; b: Building } | undefined; // a complete Town Center
     const barracks: Array<{ e: Entity; b: Building }> = [];
     const ranges: Array<{ e: Entity; b: Building }> = [];
+    // Phase 6 teching: count blacksmiths + watch towers (foundation OR complete,
+    // like the barracks count) so maybeTech doesn't re-place ones in flight.
+    const blacksmiths: Array<{ e: Entity; b: Building }> = []; // any (foundation/complete)
+    let watchTowers = 0; // foundation OR complete
     for (const [e, b] of world.query(CBuilding)) {
       if (b.owner !== owner) continue;
       if (b.kind === "town_center" && b.complete && tc === undefined) tc = { e, b };
       else if (b.kind === "barracks") barracks.push({ e, b });
       else if (b.kind === "archery_range") ranges.push({ e, b });
+      else if (b.kind === "blacksmith") blacksmiths.push({ e, b });
+      else if (b.kind === "watch_tower") watchTowers++;
     }
     if (tc === undefined) return; // no base to think from (dead/booting) — bail.
 
@@ -129,13 +140,23 @@ export class AiSystem implements System {
     // --- 2) Houses: keep pop headroom -------------------------------------
     this.maybeBuildHouse(world, owner, ps, mem, params, tc.b);
 
+    // Phase 6: the AI banks for its next tech goal (Bronze → Blacksmith → a
+    // couple of Blacksmith upgrades) by PAUSING new unit production — continuous
+    // production otherwise keeps resources near zero and tech never affords. The
+    // army already built keeps fighting (step 6); once the tech plan is done the
+    // AI returns to pure military. See techSavingGoal.
+    const saving =
+      villagers >= Math.floor(params.villagerTarget * 0.6) &&
+      this.wantsToBankTech(world, ps, params, tc.e, barracks, blacksmiths);
+
     // --- 3) Train villagers up to target ----------------------------------
-    this.trainVillagers(world, owner, ps, params, villagers, tc.e);
+    if (!saving) this.trainVillagers(world, owner, ps, params, villagers, tc.e);
 
     // --- 4) Military buildings --------------------------------------------
     // Only commit to a military once the economy is on its feet, so a rush
     // doesn't starve villager production. The barracks/range builds spiral out
-    // from the Town Center via footprintPlaceable.
+    // from the Town Center via footprintPlaceable. (Buildings cost wood, not
+    // food, so they don't compete with banking for the age.)
     if (villagers >= Math.floor(params.villagerTarget * 0.6)) {
       if (barracks.length === 0 && this.canAfford(ps, BUILDING_DEFS.barracks.cost)) {
         this.placeNear(world, owner, "barracks", tc.b);
@@ -149,13 +170,216 @@ export class AiSystem implements System {
     }
 
     // --- 5) Train military -------------------------------------------------
-    this.trainMilitary(world, owner, ps, params, barracks, "spearman");
-    if (params.buildArcheryRange) {
-      this.trainMilitary(world, owner, ps, params, ranges, "archer");
+    if (!saving) {
+      this.trainMilitary(world, owner, ps, params, barracks, "spearman");
+      if (params.buildArcheryRange) {
+        this.trainMilitary(world, owner, ps, params, ranges, "archer");
+      }
     }
 
     // --- 6) Attack ---------------------------------------------------------
     this.maybeAttack(world, owner, mem, params, military, tc.b);
+
+    // --- 7) Tech up (Phase 6) ---------------------------------------------
+    // A teching layer that runs alongside the existing flow: advance ages,
+    // build a Blacksmith + Watch Tower(s), and research upgrades when affordable.
+    this.maybeTech(world, ps, params, tc, villagers, military, blacksmiths, watchTowers);
+  }
+
+  // ------------------------------------------------------------------------
+  // 7) Tech (Phase 6)
+  // ------------------------------------------------------------------------
+
+  /**
+   * The Phase-6 teching layer. Deterministic and pre-gated (`canResearch` for
+   * eligibility + `canAfford` for cost), running on the same think cadence as the
+   * rest of the build order. Priority, top to bottom:
+   *
+   *   1. Advance the age — Bronze once the economy is on its feet, then Iron once
+   *      there's some army (medium/hard only; easy stops at Bronze).
+   *   2. Build a Blacksmith once in Bronze (none in flight).
+   *   3. Build Watch Tower(s) near the TC for defense (1, or 2 on medium/hard).
+   *   4. Research Blacksmith + Town-Center upgrades, in a fixed preference order.
+   *
+   * Only enqueues commands; the executor re-validates everything next tick.
+   */
+  private maybeTech(
+    world: World,
+    ps: PlayerState,
+    params: AiParams,
+    tc: { e: Entity; b: Building },
+    villagers: number,
+    military: number,
+    blacksmiths: Array<{ e: Entity; b: Building }>,
+    watchTowers: number,
+  ): void {
+    const owner = ps.id;
+    // easy stops at Bronze; medium/hard pursue Iron, iron_casting, a 2nd tower.
+    const ambitious = ps.difficulty !== "easy";
+
+    // --- 1) Age advances (at the Town Center) -----------------------------
+    // Bronze: once the economy is on its feet (same ~60% villager gate the
+    // military buildings use). Iron: once we also have some army to defend the
+    // long research, and only for the ambitious difficulties.
+    if (ps.age === 1) {
+      if (
+        villagers >= Math.floor(params.villagerTarget * 0.6) &&
+        canResearch(world, owner, tc.e, "advance_bronze") &&
+        this.canAfford(ps, UPGRADE_DEFS.advance_bronze.cost)
+      ) {
+        this.research(owner, tc.e, "advance_bronze");
+      }
+      return; // nothing else here is reachable below Bronze
+    }
+
+    // From here on age >= 2 (Bronze or Iron).
+
+    if (
+      ps.age === 2 &&
+      ambitious &&
+      military >= Math.max(1, Math.floor(params.armyThreshold / 2)) &&
+      canResearch(world, owner, tc.e, "advance_iron") &&
+      this.canAfford(ps, UPGRADE_DEFS.advance_iron.cost)
+    ) {
+      this.research(owner, tc.e, "advance_iron");
+    }
+
+    // --- 2) Blacksmith ----------------------------------------------------
+    // One Blacksmith (count foundation + complete) once we can pay for it.
+    if (blacksmiths.length === 0 && this.canAfford(ps, BUILDING_DEFS.blacksmith.cost)) {
+      this.placeNear(world, owner, "blacksmith", tc.b);
+    }
+
+    // --- 3) Watch tower(s) ------------------------------------------------
+    // Defensive towers cost wood + STONE. The AI doesn't gather stone in its
+    // normal loop, so we attempt the tower only when its full cost (stone
+    // included) is already affordable from the stockpile and nudge one idle
+    // villager onto stone otherwise — see maybeGatherStone. This keeps the
+    // existing food/wood/gold gather logic untouched.
+    const towerTarget = ambitious ? 2 : 1;
+    if (watchTowers < towerTarget) {
+      if (this.canAfford(ps, BUILDING_DEFS.watch_tower.cost)) {
+        this.placeNear(world, owner, "watch_tower", tc.b);
+      } else {
+        this.maybeGatherStone(world, owner, ps);
+      }
+    }
+
+    // --- 4) Upgrades ------------------------------------------------------
+    // Fixed preference order; canResearch gates kind/age/prereq/in-progress and
+    // returns false if the building is busy (one research per building at a time).
+    // forging → fletching (archers only) → scale_armor → iron_casting at each
+    // Blacksmith; wheelbarrow at the Town Center.
+    const smithOrder: UpgradeId[] = params.buildArcheryRange
+      ? ["forging", "fletching", "scale_armor", "iron_casting"]
+      : ["forging", "scale_armor", "iron_casting"];
+    for (const { e, b } of blacksmiths) {
+      if (!b.complete) continue;
+      for (const id of smithOrder) {
+        // iron_casting is an Iron-age tech; only the ambitious difficulties chase it.
+        if (id === "iron_casting" && !ambitious) continue;
+        if (canResearch(world, owner, e, id) && this.canAfford(ps, UPGRADE_DEFS[id].cost)) {
+          this.research(owner, e, id);
+          break; // one research per building per pass (it's now busy)
+        }
+      }
+    }
+    // Town-Center economy upgrade (after age advances are considered above so we
+    // don't tie up the TC and block an age-up the same pass).
+    if (
+      canResearch(world, owner, tc.e, "wheelbarrow") &&
+      this.canAfford(ps, UPGRADE_DEFS.wheelbarrow.cost)
+    ) {
+      this.research(owner, tc.e, "wheelbarrow");
+    }
+  }
+
+  /**
+   * Whether the AI should pause new unit production to bank for its next tech
+   * goal. Tech plan: Bronze age → a Blacksmith → up to two Blacksmith upgrades,
+   * then back to pure military. Crucially this does NOT check affordability —
+   * it stays true until the purchase has STARTED (gated by `canResearch`, which
+   * flips false once the building is busy / the tech is owned). Checking
+   * affordability would oscillate at the cost threshold: the pass food first hits
+   * the cost we'd un-pause, train units, dip back under, and never actually buy.
+   */
+  private wantsToBankTech(
+    world: World,
+    ps: PlayerState,
+    params: AiParams,
+    tcEntity: Entity,
+    barracks: Array<{ e: Entity; b: Building }>,
+    blacksmiths: Array<{ e: Entity; b: Building }>,
+  ): boolean {
+    const owner = ps.id;
+
+    // Age 1: bank for Bronze once a barracks exists (canResearch flips false once
+    // the age research is in progress, so we resume while it completes).
+    if (ps.age === 1) {
+      return barracks.length > 0 && canResearch(world, owner, tcEntity, "advance_bronze");
+    }
+
+    // Age >= 2: pursue a bounded number of Blacksmith upgrades first.
+    const upgradesDone = ps.techs.filter(
+      (t) => UPGRADE_DEFS[t as UpgradeId]?.building === "blacksmith",
+    ).length;
+    if (upgradesDone < 2) {
+      // Need a Blacksmith first: bank for it until a foundation is down.
+      const smith = blacksmiths.find((x) => x.b.complete);
+      if (smith === undefined) return blacksmiths.length === 0;
+      // Bank for the cheapest eligible Blacksmith upgrade (a busy smith ⇒ none
+      // eligible ⇒ false ⇒ production resumes while it researches).
+      const order: UpgradeId[] = params.buildArcheryRange
+        ? ["forging", "fletching", "scale_armor"]
+        : ["forging", "scale_armor"];
+      return order.some((id) => canResearch(world, owner, smith.e, id));
+    }
+
+    // Blacksmith plan done: ambitious AIs bank for the Iron age advance (mirrors
+    // the Bronze arm — canResearch flips false once it's in progress).
+    const ambitious = ps.difficulty !== "easy";
+    return ambitious && ps.age === 2 && canResearch(world, owner, tcEntity, "advance_iron");
+  }
+
+  /**
+   * Nudge a single idle villager onto stone so Watch Towers (wood + stone) can
+   * eventually be afforded. Deliberately minimal and separate from
+   * assignIdleVillagers (which only balances food/wood/gold and must stay
+   * untouched): pulls at most ONE truly-idle, non-pathing villager per pass and
+   * only if nobody is already mining stone, so it never starves the main
+   * economy. Deterministic: lowest entity id wins.
+   */
+  private maybeGatherStone(world: World, owner: number, ps: PlayerState): void {
+    // Don't divert our one idle villager to stone during a food emergency — food
+    // funds villagers/spearmen and the diverted villager would override its
+    // food assignment for this tick (commands apply next tick, FIFO).
+    if (ps.food < 80) return;
+    // Already have enough stone for a tower, or someone's already on it — skip.
+    if (ps.stone >= (BUILDING_DEFS.watch_tower.cost.stone ?? 0)) return;
+    let candidate: { e: Entity; x: number; y: number } | undefined;
+    for (const [e, u] of world.query(CUnit)) {
+      if (u.owner !== owner || u.kind !== "villager") continue;
+      const g = world.get(e, CGather);
+      if (g !== undefined) {
+        if (g.resourceKind === "stone") return; // already mining stone — done
+        continue;
+      }
+      if (world.has(e, CBuild)) continue;
+      const mv = world.get(e, CMovement);
+      const tr = world.get(e, CTransform);
+      if (mv === undefined || tr === undefined || mv.path.length > 0) continue;
+      // Lowest entity id is the stable pick (query order is natural/ascending).
+      if (candidate === undefined) candidate = { e, x: tr.x, y: tr.y };
+    }
+    if (candidate === undefined) return;
+    const hit = findNearestNodeOfKind(world, "stone", candidate.x, candidate.y, 9999);
+    if (hit === null) return;
+    this.buffer.enqueue({ type: "gather", owner, units: [candidate.e], node: hit.entity });
+  }
+
+  /** Enqueue a research command (pre-gated by the caller via canResearch + canAfford). */
+  private research(owner: number, building: Entity, upgrade: UpgradeId): void {
+    this.buffer.enqueue({ type: "research", owner, building, upgrade });
   }
 
   // ------------------------------------------------------------------------

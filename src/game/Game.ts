@@ -20,6 +20,8 @@ import { EconomySystem } from "@/systems/EconomySystem";
 import { DeathSystem } from "@/systems/DeathSystem";
 import { FogSystem } from "@/systems/FogSystem";
 import { MatchSystem } from "@/systems/MatchSystem";
+import { ResearchSystem } from "@/systems/ResearchSystem";
+import { TowerSystem } from "@/systems/TowerSystem";
 import { AiSystem } from "@/systems/AiSystem";
 import { spawnUnit, spawnResourceNode, spawnBuilding, spawnPlayer } from "@/game/spawn";
 import { canStand } from "@/pathfinding/astar";
@@ -123,8 +125,12 @@ export class Game {
       new GatherSystem(this.map, this.occ),
       new BuildSystem(this.map, this.occ),
       new CombatSystem(this.map, this.occ),
+      new TowerSystem(), // building-attackers fire after units; arrows fly this tick
       new MovementSystem(this.map, this.occ),
       new ProjectileSystem(),
+      // Research before Death so a tech completing on the same tick its building
+      // is destroyed still applies (Death reaps the building + its components).
+      new ResearchSystem(), // advance tech + apply upgrades/age
       new DeathSystem(this.occ),
       new MatchSystem(),
       new EconomySystem(this.map, this.occ),
