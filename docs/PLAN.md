@@ -6,7 +6,7 @@ the next phase's task list. The original brief is in [`PROMPT.md`](PROMPT.md).
 **Update this file at the end of every phase**, commit, and push. It is written
 to be self-sufficient so work resumes cleanly in a fresh context.
 
-Last updated: end of **Phase 3**.
+Last updated: end of **Phase 4**.
 
 ## Status
 
@@ -16,8 +16,8 @@ Last updated: end of **Phase 3**.
 | 1 | Units & movement | ✅ | `53f665d` |
 | 2 | Economy | ✅ | `6b29895` |
 | 3 | Buildings & construction | ✅ | `9b3ba20` |
-| 4 | Combat | ⬜ **in progress** | — |
-| 5 | Enemy AI + match flow | ⬜ | — |
+| 4 | Combat | ✅ | `af42910` |
+| 5 | Enemy AI + match flow | ⬜ **Next** | — |
 | 6 | Depth (tech/ages/minimap/audio/save UI) | ⬜ | — |
 
 ## Commands
@@ -95,10 +95,17 @@ Data-driven `BUILDING_DEFS` + `UNIT_STATS` (incl. spearman + combat stats). Buil
 panel. Generalized drop-offs + training. Unified depth-sorted `drawWorld` + placement
 ghost. Review: 7 findings; major = building depth-key occluded units in front.
 
-### Phase 4 — Combat (next; deliverable: two armies can fight)
-HP/armor/pierce-armor/attack stats (already in `UNIT_STATS`); melee + ranged; an
-Archer + Archery Range; projectiles; attack & attack-move orders + auto-retaliate;
-unit counters (bonus-damage table); death; fog of war + explored memory.
+### Phase 4 — Combat ✅ (`af42910`)
+Archer + Archery Range. `Combat` + `Projectile` components (every unit has Combat).
+`CombatSystem` (validate/auto-acquire/chase/attack, melee + ranged, attack-move).
+`ProjectileSystem` (homing arrows + impact). `DeathSystem` (reaps 0-hp after the
+tick; frees occupancy). Damage = `max(1, attack − armor/pierce)` + `DAMAGE_BONUS`
+counters. Per-player `Fog` + `FogSystem` (visible/explored, derived); renderer fog-
+gates enemies + `drawFog` veil. Orders: right-click attack (fog-gated), `F` attack-
+move; manual orders cancel combat. Debug enemy squad + console spawn hooks. Built
+by parallel subagents (render agent's connection dropped — finished by hand).
+Review: 5 findings; major = melee couldn't reach a building's attack range (now
+measured to the nearest footprint tile).
 
 ### Phase 5 — Enemy AI + match flow
 Rule-based AI (build-order state machine) that economies up + attacks; difficulty;
@@ -110,38 +117,42 @@ save/load UI; audio (CC0); balance pass.
 
 ## Deferred backlog (carry-over)
 
-- **[render]** Per-row building depth banding — the single front-tile-centre depth key
-  can still mis-sort a unit at the far-west front tile of a 3×3; split into per-row
-  slices if noticeable.
-- **[Phase 4+]** Cancel/refund a placed foundation + building destruction (must clear
-  the footprint via `Game.setBuildingOccupancy`; occupancy owned by placement/Game).
-- **[Phase 5]** Owner-gate `BuildSystem` (only the producer `assignBuild` filters to
-  own villagers today). Route player UI commands through a per-tick command buffer so
-  all sim writes land on the deterministic tick (needed for AI/replay/networking).
+- **[Phase 5]** **Win/lose + match setup** (player defeated when all buildings
+  destroyed). **Replace the debug enemy squad / console spawn hooks** with a real
+  owner-1 player + AI. **Owner-gate `CombatSystem` & `BuildSystem`** stances (e.g. a
+  move-only stance vs the current aggressive default) once a second player exists.
+  Route player UI commands through a per-tick command buffer so all sim writes land
+  on the deterministic tick (needed for AI/replay).
+- **[Phase 4+]** Cancel/refund a placed foundation + building destruction UX (combat
+  already destroys buildings + frees occupancy; no player-driven demolish/refund).
+- **[render]** Per-row building depth banding (single front-tile-centre key can mis-
+  sort a unit at a 3×3's far front tile); enemy-building fog gate uses one centre tile
+  rather than the whole footprint (cosmetic, sight ≫ footprint so near-unreachable).
+- **[Phase 6]** Projectiles snapshot `attack` only and resolve armor/counters vs the
+  defender's live stats at impact — revisit if mutable/tech-modified armor lands.
 - **[perf]** A* scratch-array pooling; spatial-grid separation (both fine until crowds
   grow). **[feel]** true formation movement (vs current distinct-tile spread).
 
-## Next up — Phase 4 task breakdown
+## Next up — Phase 5: Enemy AI + match flow
 
-Goal: **two armies can fight.** Refine at start.
+Goal: **a full, beatable match.** Refine at start.
 
-- [ ] **Combat data + components.** Use existing `UNIT_STATS` combat fields. Add an
-      `Archer` unit + `Archery Range` building (data edits). Add a `Combat` component
-      (target entity, attack cooldown timer) and a `Projectile` component
-      (pos/target/damage/speed). Optionally an `AttackOrder`/`AttackMove` task.
-- [ ] **CombatSystem (sim).** Acquire nearest enemy (unit or building) in aggro range;
-      melee when adjacent, ranged when within `range`; attack on cooldown; damage =
-      `max(1, attack − armor)` (melee) / `− pierceArmor` (ranged); apply a counter
-      bonus table. Death = `destroyEntity` (free occupancy for buildings). Deterministic.
-- [ ] **Projectiles.** Ranged attack spawns a projectile that travels and applies
-      damage on arrival (interpolated render); arrow sprite.
-- [ ] **Orders.** Right-click enemy = attack; attack-move walks to a point but engages
-      en route; idle units auto-retaliate when hit. Wire into `main` right-click +
-      hotkey; movement integrates with `CombatSystem`.
-- [ ] **Fog of war + explored memory.** Per-player visibility grid (deterministic, sim
-      state) from unit/building line-of-sight; render: unexplored = black,
-      explored-but-not-visible = dimmed with last-seen buildings.
-- [ ] **Two-sided test hook.** Spawn a few owner-1 enemy units (debug) so combat is
-      testable before Phase 5's AI; HP bars already exist.
-- [ ] **Save/load** round-trips the new components; review → fix → verify in browser →
-      update README + this file → commit → push → stop.
+- [ ] **Second player + match setup.** Replace the debug enemy squad with a real
+      owner-1 player (its own `Player` entity, Town Center, starting villagers). A
+      match-setup screen (map size, AI difficulty, starting resources) before the game.
+- [ ] **Rule-based AI (build-order state machine).** Per AI player: gather → build
+      houses/military buildings → train an army → attack the human. Difficulty tiers
+      tune timings/army size. Deterministic — draws from the sim RNG, runs in a system
+      (or per-tick), no `Math.random`. Reuse the existing order helpers (gather/build/
+      train/attack-move) rather than poking components directly where possible.
+- [ ] **Per-tick command buffer (foundation).** Route both player and AI intents
+      through a buffer consumed inside `fixedUpdate`, so every sim write is on the tick
+      (clears the deferred determinism item, enables replay later).
+- [ ] **Win/lose.** A player is defeated when all their buildings are destroyed; show a
+      victory/defeat overlay; end/restart flow.
+- [ ] **Fog/AI interaction.** The AI should act on its own visibility (or omniscient at
+      first, scouting later). Keep fog per-player (currently only the human's is built).
+- [ ] **Stances** (optional): a move-only vs aggressive toggle now that a real enemy
+      exists, so move orders don't always auto-divert.
+- [ ] **Save/load** round-trips; review → fix → verify in browser → update README +
+      this file → commit → push → stop.
