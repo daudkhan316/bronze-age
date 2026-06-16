@@ -1,9 +1,11 @@
 import type { GameMap } from "@/map/GameMap";
 import type { GridPoint } from "@/math/iso";
-import { isWalkable, packId } from "@/pathfinding/grid";
+import { canStand, packId } from "@/pathfinding/grid";
+import type { BlockedQuery } from "@/pathfinding/grid";
 
-// Re-export the walkability predicate so callers only need "@/pathfinding/astar".
-export { isWalkable } from "@/pathfinding/grid";
+// Re-export walkability helpers so callers only need "@/pathfinding/astar".
+export { isWalkable, canStand, standableTileNear } from "@/pathfinding/grid";
+export type { BlockedQuery } from "@/pathfinding/grid";
 
 /**
  * 8-connected A* over the tile grid.
@@ -130,8 +132,8 @@ class MinHeap {
  * Used to retarget when the requested goal is itself blocked, so a right-click
  * on water/forest still moves the unit as close as it can get.
  */
-function nearestWalkable(map: GameMap, goal: GridPoint): GridPoint | null {
-  if (isWalkable(map, goal.tx, goal.ty)) return { tx: goal.tx, ty: goal.ty };
+function nearestWalkable(map: GameMap, goal: GridPoint, occ?: BlockedQuery): GridPoint | null {
+  if (canStand(map, goal.tx, goal.ty, occ)) return { tx: goal.tx, ty: goal.ty };
 
   // A ring at radius r can never contain a closer tile than the map's farthest
   // extent, so bound the search by the map diagonal.
@@ -145,7 +147,7 @@ function nearestWalkable(map: GameMap, goal: GridPoint): GridPoint | null {
         // Only the perimeter of the square is new at this radius.
         const onRing = Math.abs(tx - goal.tx) === r || Math.abs(ty - goal.ty) === r;
         if (!onRing) continue;
-        if (isWalkable(map, tx, ty)) {
+        if (canStand(map, tx, ty, occ)) {
           best = { tx, ty };
           break;
         }
@@ -166,7 +168,12 @@ function nearestWalkable(map: GameMap, goal: GridPoint): GridPoint | null {
  *
  * If `goal` is unwalkable it is retargeted to the nearest walkable tile first.
  */
-export function findPath(map: GameMap, start: GridPoint, goal: GridPoint): GridPoint[] {
+export function findPath(
+  map: GameMap,
+  start: GridPoint,
+  goal: GridPoint,
+  occ?: BlockedQuery,
+): GridPoint[] {
   // Clamp the goal into the map first, so nearestWalkable's bounded ring scan
   // always covers every in-map tile even if a caller passes an out-of-bounds
   // goal (otherwise a far OOB goal could exceed the scan radius and wrongly
@@ -176,12 +183,12 @@ export function findPath(map: GameMap, start: GridPoint, goal: GridPoint): GridP
     ty: goal.ty < 0 ? 0 : goal.ty > map.height - 1 ? map.height - 1 : goal.ty,
   };
 
-  // Retarget a blocked goal to the closest walkable tile (deterministic).
-  const target = nearestWalkable(map, clampedGoal);
+  // Retarget a blocked goal to the closest standable tile (deterministic).
+  const target = nearestWalkable(map, clampedGoal, occ);
   if (target === null) return [];
 
   // If the unit can't even stand on its start tile, there is nothing to do.
-  if (!isWalkable(map, start.tx, start.ty)) return [];
+  if (!canStand(map, start.tx, start.ty, occ)) return [];
 
   if (start.tx === target.tx && start.ty === target.ty) return [];
 
@@ -216,14 +223,14 @@ export function findPath(map: GameMap, start: GridPoint, goal: GridPoint): GridP
     for (const nb of NEIGHBOURS) {
       const nx = cx + nb.dx;
       const ny = cy + nb.dy;
-      if (!isWalkable(map, nx, ny)) continue;
+      if (!canStand(map, nx, ny, occ)) continue;
 
       // No corner cutting: both orthogonal cells flanking the diagonal must be
       // clear, otherwise the unit would clip the corner of a blocked tile.
       if (nb.guards !== null) {
         const [ga, gb] = nb.guards;
-        if (!isWalkable(map, cx + ga[0], cy + ga[1])) continue;
-        if (!isWalkable(map, cx + gb[0], cy + gb[1])) continue;
+        if (!canStand(map, cx + ga[0], cy + ga[1], occ)) continue;
+        if (!canStand(map, cx + gb[0], cy + gb[1], occ)) continue;
       }
 
       const neighbourId = packId(nx, ny, width);

@@ -6,12 +6,16 @@ import type { Terrain } from "@/map/Terrain";
 import { generateMap } from "@/map/generate";
 import { Random } from "@/core/Random";
 import { gridToWorld } from "@/math/iso";
+import type { GridPoint } from "@/math/iso";
 import type { Vec2 } from "@/math/Vec2";
 import { DEFAULT_MAP_W, DEFAULT_MAP_H, SIM_SEED_OFFSET } from "@/config";
+import { Occupancy } from "@/map/Occupancy";
 import { MovementSystem } from "@/systems/MovementSystem";
-import { spawnUnit } from "@/game/spawn";
-import { isWalkable } from "@/pathfinding/astar";
-import { PLAYER_ID } from "@/game/components";
+import { GatherSystem } from "@/systems/GatherSystem";
+import { EconomySystem } from "@/systems/EconomySystem";
+import { spawnUnit, spawnResourceNode, spawnBuilding, spawnPlayer } from "@/game/spawn";
+import { canStand } from "@/pathfinding/astar";
+import { PLAYER_ID, CBuilding, type ResourceKind } from "@/game/components";
 
 export interface WorldBounds {
   minX: number;
@@ -40,22 +44,19 @@ interface GameRestore {
 
 /**
  * Owns everything in the deterministic simulation: the ECS world, the map, the
- * seeded RNG, the ordered system list, and the authoritative tick counter. The
- * render/camera/input layers live outside and only read from here.
+ * occupancy grid, the seeded RNG, the ordered system list, and the tick counter.
+ * The render/camera/input layers live outside and only read from here.
  *
  * Map generation and the simulation use SEPARATE RNG streams (derived from the
- * same seed). This matters: generation consumes a data-dependent number of
- * draws, so sharing one stream would make the sim's randomness depend on map
- * geometry and tangle save/load. Keeping them independent lets a save serialize
- * the sim RNG state cleanly (and optionally regenerate the map from `seed`).
- *
- * Phase 0 has no systems or entities yet — this is the seam Phase 1 plugs units
- * and movement into.
+ * same seed) so the sim's randomness doesn't depend on map geometry — see the
+ * note in the constructor.
  */
 export class Game {
   readonly world: World;
   readonly map: GameMap;
   readonly seed: number;
+  /** Tiles blocked by buildings (rebuilt on load; not serialized). */
+  readonly occ: Occupancy;
   /** Simulation RNG — never use Math.random() in sim code, draw from this. */
   readonly rng: Random;
   /** Authoritative simulation time, in ticks. Part of the save snapshot. */
@@ -69,47 +70,156 @@ export class Game {
       this.map = restore.map;
       this.world = restore.world;
       this.tick = restore.tick;
+      this.occ = new Occupancy(this.map.width, this.map.height);
+      this.rebuildOccupancy();
     } else {
       const genRng = new Random(seed);
       this.map = generateMap(DEFAULT_MAP_W, DEFAULT_MAP_H, genRng);
       this.rng = new Random((seed ^ SIM_SEED_OFFSET) >>> 0);
       this.world = new World();
-      this.spawnInitialUnits();
+      this.occ = new Occupancy(this.map.width, this.map.height);
+      this.setupEconomy();
     }
     // Systems are logic, not state — recreated on load, never serialized.
-    this.systems = [new MovementSystem(this.map)];
+    // Order: gather (sets paths, harvests, deposits) → movement (consumes
+    // paths) → economy (population recount + training).
+    this.systems = [
+      new GatherSystem(this.map, this.occ),
+      new MovementSystem(this.map, this.occ),
+      new EconomySystem(this.map, this.occ),
+    ];
   }
 
-  /** Place the player's starting villagers on walkable tiles near the centre. */
-  private spawnInitialUnits(): void {
-    const cx = Math.floor(this.map.width / 2);
-    const cy = Math.floor(this.map.height / 2);
+  /** Rebuild the occupancy grid from the world's building footprints. */
+  private rebuildOccupancy(): void {
+    this.occ.clear();
+    for (const [, b] of this.world.query(CBuilding)) {
+      this.occ.setRect(b.tx, b.ty, b.w, b.h, true);
+    }
+  }
 
-    // Spiral outward from the centre, dropping villagers on walkable tiles.
-    let placed = 0;
-    const target = 8;
-    for (let r = 0; r <= 12 && placed < target; r++) {
-      for (let dy = -r; dy <= r && placed < target; dy++) {
-        for (let dx = -r; dx <= r && placed < target; dx++) {
-          if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue; // current ring only
-          if (isWalkable(this.map, cx + dx, cy + dy)) {
-            spawnUnit(this.world, "villager", cx + dx, cy + dy, PLAYER_ID);
-            placed++;
-          }
+  // --- initial economy setup (fresh game only) ----------------------------
+
+  private setupEconomy(): void {
+    const map = this.map;
+    const cx = Math.floor(map.width / 2);
+    const cy = Math.floor(map.height / 2);
+
+    spawnPlayer(this.world, PLAYER_ID);
+
+    // Turn resource terrain into harvestable nodes (trees / gold / stone).
+    for (let ty = 0; ty < map.height; ty++) {
+      for (let tx = 0; tx < map.width; tx++) {
+        const t = map.get(tx, ty);
+        const kind: ResourceKind | null =
+          t === "forest" ? "wood" : t === "gold" ? "gold" : t === "stone" ? "stone" : null;
+        if (kind !== null) spawnResourceNode(this.world, kind, tx, ty);
+      }
+    }
+
+    // Town Center on a clear 3×3 area near the centre.
+    const tc = this.findClearArea(cx, cy, 3, 3) ?? { tx: cx, ty: cy };
+    spawnBuilding(this.world, "town_center", PLAYER_ID, tc.tx, tc.ty);
+    this.occ.setRect(tc.tx, tc.ty, 3, 3, true);
+
+    // Two houses on nearby clear 2×2 areas.
+    let houses = 0;
+    const offsets: ReadonlyArray<readonly [number, number]> = [
+      [-3, 0],
+      [4, 0],
+      [0, -3],
+      [-3, 4],
+      [4, 4],
+      [0, 5],
+    ];
+    for (const [ox, oy] of offsets) {
+      if (houses >= 2) break;
+      const hx = tc.tx + ox;
+      const hy = tc.ty + oy;
+      if (this.areaClear(hx, hy, 2, 2)) {
+        spawnBuilding(this.world, "house", PLAYER_ID, hx, hy);
+        this.occ.setRect(hx, hy, 2, 2, true);
+        houses++;
+      }
+    }
+
+    // Guarantee a starting wood grove and food bushes near the Town Center.
+    this.scatterNodes(tc.tx - 6, tc.ty - 1, "wood", 10, true);
+    this.scatterNodes(tc.tx + 2, tc.ty + 6, "food", 6, false);
+
+    // Three starting villagers on standable tiles ringing the Town Center.
+    const spots = this.tilesAround(tc.tx, tc.ty, 3, 3, 3);
+    for (const s of spots) spawnUnit(this.world, "villager", s.tx, s.ty, PLAYER_ID);
+  }
+
+  /** All tiles of a w×h block are in-bounds, standable, and unoccupied. */
+  private areaClear(tx: number, ty: number, w: number, h: number): boolean {
+    for (let y = ty; y < ty + h; y++) {
+      for (let x = tx; x < tx + w; x++) {
+        if (!canStand(this.map, x, y, this.occ)) return false;
+      }
+    }
+    return true;
+  }
+
+  /** Nearest clear w×h block origin to (cx, cy), or null. */
+  private findClearArea(cx: number, cy: number, w: number, h: number): GridPoint | null {
+    for (let r = 0; r <= 16; r++) {
+      for (let dy = -r; dy <= r; dy++) {
+        for (let dx = -r; dx <= r; dx++) {
+          if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+          if (this.areaClear(cx + dx, cy + dy, w, h)) return { tx: cx + dx, ty: cy + dy };
         }
       }
     }
+    return null;
+  }
 
-    // A couple of (unselectable) enemy villagers, to show owner colours and
-    // that selection ignores other players' units.
-    for (const [ox, oy] of [
-      [10, 0],
-      [11, 1],
-    ] as const) {
-      if (isWalkable(this.map, cx + ox, cy + oy)) {
-        spawnUnit(this.world, "villager", cx + ox, cy + oy, 1);
+  /**
+   * Place up to `count` resource nodes of `kind` on grass tiles spiralling out
+   * from (cx, cy). `asForest` also flips the terrain to forest (a planted grove)
+   * so the wood is visible and blocks like real trees.
+   */
+  private scatterNodes(
+    cx: number,
+    cy: number,
+    kind: ResourceKind,
+    count: number,
+    asForest: boolean,
+  ): void {
+    let placed = 0;
+    for (let r = 0; r <= 14 && placed < count; r++) {
+      for (let dy = -r; dy <= r && placed < count; dy++) {
+        for (let dx = -r; dx <= r && placed < count; dx++) {
+          if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+          const tx = cx + dx;
+          const ty = cy + dy;
+          if (!this.map.inBounds(tx, ty)) continue;
+          if (this.map.get(tx, ty) !== "grass" || this.occ.isBlocked(tx, ty)) continue;
+          if (asForest) this.map.set(tx, ty, "forest");
+          spawnResourceNode(this.world, kind, tx, ty);
+          placed++;
+        }
       }
     }
+  }
+
+  /** Up to `want` standable tiles on the perimeter rings around a building box. */
+  private tilesAround(tx: number, ty: number, w: number, h: number, want: number): GridPoint[] {
+    const out: GridPoint[] = [];
+    for (let r = 1; r <= 6 && out.length < want; r++) {
+      const x0 = tx - r;
+      const x1 = tx + w - 1 + r;
+      const y0 = ty - r;
+      const y1 = ty + h - 1 + r;
+      for (let y = y0; y <= y1 && out.length < want; y++) {
+        for (let x = x0; x <= x1 && out.length < want; x++) {
+          if (x !== x0 && x !== x1 && y !== y0 && y !== y1) continue; // perimeter only
+          if (canStand(this.map, x, y, this.occ)) out.push({ tx: x, ty: y });
+        }
+      }
+    }
+    return out;
   }
 
   /** Run one fixed simulation tick: every system in order, then advance time. */

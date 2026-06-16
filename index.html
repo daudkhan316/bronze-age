@@ -44,6 +44,64 @@
         white-space: pre;
         user-select: none;
       }
+      #resbar {
+        position: fixed;
+        top: 8px;
+        left: 50%;
+        transform: translateX(-50%);
+        display: flex;
+        gap: 18px;
+        padding: 7px 16px;
+        font-size: 13px;
+        background: rgba(0, 0, 0, 0.5);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 6px;
+        user-select: none;
+        pointer-events: none;
+        white-space: nowrap;
+      }
+      #resbar .res {
+        display: inline-flex;
+        gap: 6px;
+        align-items: baseline;
+      }
+      #resbar .dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 2px;
+        align-self: center;
+      }
+      #resbar .v {
+        min-width: 34px;
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+      }
+      #controls {
+        position: fixed;
+        right: 10px;
+        bottom: 34px;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        align-items: stretch;
+      }
+      #controls button {
+        font: inherit;
+        font-size: 12px;
+        color: #e6e6e6;
+        background: rgba(20, 28, 36, 0.92);
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        border-radius: 6px;
+        padding: 8px 12px;
+        cursor: pointer;
+      }
+      #controls button:hover {
+        background: rgba(40, 54, 68, 0.95);
+      }
+      #controls button:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+      }
       #help {
         position: fixed;
         bottom: 8px;
@@ -61,11 +119,15 @@
   <body>
     <div id="app">
       <canvas id="game"></canvas>
+      <div id="resbar"></div>
+      <div id="controls">
+        <button id="train-villager" title="Hotkey: Q">Train Villager (50 F)</button>
+      </div>
       <div id="hud"></div>
       <div id="help">
-        Left-click / drag-box / double-click: select &nbsp;•&nbsp; Right-click: move &nbsp;•&nbsp;
-        Shift: add &nbsp;•&nbsp; WASD / Arrows / edge: pan &nbsp;•&nbsp; Wheel: zoom &nbsp;•&nbsp;
-        Middle-drag: pan &nbsp;•&nbsp; Space: pause &nbsp;•&nbsp; G: grid
+        Select: click / drag-box / double-click &nbsp;•&nbsp; Right-click: move or gather &nbsp;•&nbsp;
+        Q: train villager &nbsp;•&nbsp; Shift: add &nbsp;•&nbsp; WASD / edge / middle-drag: pan &nbsp;•&nbsp;
+        Wheel: zoom &nbsp;•&nbsp; Space: pause &nbsp;•&nbsp; G: grid
       </div>
     </div>
     <script type="module" src="/src/main.ts"></script>

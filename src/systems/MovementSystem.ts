@@ -5,7 +5,8 @@ import { CMovement, CTransform, CUnit } from "@/game/components";
 import type { Transform } from "@/game/components";
 import { tileCenterWorld, worldToTile } from "@/math/iso";
 import type { GameMap } from "@/map/GameMap";
-import { isWalkable } from "@/pathfinding/astar";
+import { canStand } from "@/pathfinding/astar";
+import type { Occupancy } from "@/map/Occupancy";
 
 /** Ticks of near-zero net progress before a pathing unit gives up (≈1.5s @20Hz). */
 const STUCK_LIMIT = 30;
@@ -28,8 +29,14 @@ const PROGRESS_FRACTION = 0.2;
 export class MovementSystem implements System {
   readonly name = "movement";
 
-  /** The map is needed so separation never shoves a unit onto unwalkable terrain. */
-  constructor(private readonly map: GameMap) {}
+  /**
+   * Map + occupancy let separation refuse to shove a unit onto unwalkable
+   * terrain or a building footprint (which would otherwise strand it).
+   */
+  constructor(
+    private readonly map: GameMap,
+    private readonly occ: Occupancy,
+  ) {}
 
   update(world: World, dt: number): void {
     // Snapshot pre-tick positions of active movers so we can measure NET
@@ -179,12 +186,12 @@ export class MovementSystem implements System {
     }
   }
 
-  /** Apply a positional nudge only if it keeps the unit on a walkable tile. */
+  /** Apply a positional nudge only if it keeps the unit on a standable tile. */
   private pushIfWalkable(tr: Transform, ddx: number, ddy: number): void {
     const nx = tr.x + ddx;
     const ny = tr.y + ddy;
     const tile = worldToTile(nx, ny);
-    if (isWalkable(this.map, tile.tx, tile.ty)) {
+    if (canStand(this.map, tile.tx, tile.ty, this.occ)) {
       tr.x = nx;
       tr.y = ny;
     }
