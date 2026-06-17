@@ -6,7 +6,7 @@ the next phase's task list. The original brief is in [`PROMPT.md`](PROMPT.md).
 **Update this file at the end of every phase**, commit, and push. It is written
 to be self-sufficient so work resumes cleanly in a fresh context.
 
-Last updated: **Phase 6, slice 4 (balance pass)**.
+Last updated: **Phase 6, slice 5 (audio)**.
 
 ## Status
 
@@ -23,7 +23,8 @@ Last updated: **Phase 6, slice 4 (balance pass)**.
 | 6b | · QoL/UI (minimap · control groups · save/load) | ✅ | `2943468` |
 | 6c | · Cavalry & counter triangle (+ AI economy fixes) | ✅ | `b2da500` |
 | 6d | · Balance pass (archer kiting fix, cheaper tech/cav, curve) | ✅ | `65c87b7` |
-| 6e+ | · Audio · walls/gates | ⬜ **Next** | — |
+| 6e | · Audio (procedural WebAudio SFX, sim→view event channel) | ✅ | `6731d8b` |
+| 6f+ | · Walls/gates | ⬜ **Next** | — |
 
 ## Commands
 
@@ -186,6 +187,29 @@ kiting). **Still situational:** the AI fields cavalry / reaches Iron only with s
 — a deeper build-order rework (build archery+stable in the opening without pausing
 the army) is the real fix; the aggression-vs-diversity tension is genuine.
 
+**Slice 5 — Audio ✅ (`6731d8b`)** — Procedural sound. A new **one-way sim→view
+event channel** (`src/game/events.ts`, `EventBuffer`) mirrors the command buffer
+but flows OUT: sim systems `emit()` transient `GameEvent`s (arrow fired, melee
+hit, unit died, building destroyed/completed, unit trained) and the view drains
+them each frame. The buffer is **never serialized and never read by sim code**, so
+determinism is untouched — proven in-browser: a save/restored copy stayed
+byte-identical to the live game across 40 ticks with events wired in, and `events`
+is absent from the snapshot. `Game` owns the buffer and threads it into Build/
+Combat/Tower/Death/Economy systems (each emit is a one-line pure push; `reapDead`
+captures the dying entity's position before destroy). View side: **`SoundBank`**
+(`src/audio/SoundBank.ts`) synthesises every SFX procedurally with WebAudio
+(oscillators + filtered noise) — no asset files, CC0, swappable behind one
+`play()`. `main.ts` drains via `routeSimAudio` (combat **fog-gated** — but you
+always hear your *own* losses, since the dying entity may have been the only
+vision over its tile; train/build chimes owner-gated), plays view sounds at
+order/selection/placement/UI sites + victory/defeat, unlocks the AudioContext on
+first gesture (autoplay policy), and persists mute (`M` / 🔊 toolbar button).
+Review: a 3-dimension adversarial Workflow (determinism / audio-view / TS) →
+verified findings; fixed 4 real ones — own-loss fog-gate bypass, drain the
+match-deciding tick before the end screen (else the winning blow is silent),
+`Math.imul` LCG, noise divisor `0x40000000`. All 6 event types verified firing in
+a real browser.
+
 **Remaining slices** — see "Next up" below.
 
 ## Deferred backlog (carry-over)
@@ -236,17 +260,20 @@ the army) is the real fix; the aggression-vs-diversity tension is genuine.
 
 ## Next up — Phase 6 remaining slices
 
-Slices 1–4 (tech & ages, QoL/UI, cavalry & counters, balance) are done. Remaining
-grab-bag, **one reviewable slice at a time** (stop + review per slice). Reuse the
-command buffer for any new player actions; keep new sim state JSON-safe + serialized.
+Slices 1–5 (tech & ages, QoL/UI, cavalry & counters, balance, audio) are done.
+Remaining grab-bag, **one reviewable slice at a time** (stop + review per slice).
+Reuse the command buffer for any new player actions; keep new sim state JSON-safe
++ serialized. (For new view feedback, reuse the sim→view `EventBuffer` from the
+audio slice — emit a `GameEvent`, drain it in the view; never read it from sim.)
 
-- [ ] **Audio (CC0)** — selection/command/combat SFX + ambient; credit in ASSETS.md.
-      View-side (`<audio>`/WebAudio), driven by sim events; never inside the deterministic
-      tick. (Recommended next — self-contained, no sim risk.)
 - [ ] **Walls / gates** — drag-placed wall segments + an owner-aware open/close gate
       (needs occupancy/pathfinding that knows the owner). Its own focused slice.
+      (Recommended next.)
 - [ ] **(stretch) AI combined-arms build order** — make the AI reliably field cavalry/
       archers + reach Iron by building archery+stable in the opening WITHOUT pausing the
       army (the unsolved tension from slices 3–4). Risky — verify all tiers still attack+win.
+- [ ] **(optional) Audio polish** — ambient bed / spatialised (pan-by-screen-x) SFX;
+      tower-fire already covered. The `SoundBank` `play()` interface makes swapping in
+      real CC0 samples a drop-in if desired.
 - [ ] Per slice: review → fix → verify in browser → update README + this file →
       commit → push → stop.
