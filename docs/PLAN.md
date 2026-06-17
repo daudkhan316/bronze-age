@@ -6,7 +6,7 @@ the next phase's task list. The original brief is in [`PROMPT.md`](PROMPT.md).
 **Update this file at the end of every phase**, commit, and push. It is written
 to be self-sufficient so work resumes cleanly in a fresh context.
 
-Last updated: **Phase 6, slice 3 (cavalry & counters)**.
+Last updated: **Phase 6, slice 4 (balance pass)**.
 
 ## Status
 
@@ -22,7 +22,8 @@ Last updated: **Phase 6, slice 3 (cavalry & counters)**.
 | 6a | · Tech tree & ages | ✅ | `01502be` |
 | 6b | · QoL/UI (minimap · control groups · save/load) | ✅ | `2943468` |
 | 6c | · Cavalry & counter triangle (+ AI economy fixes) | ✅ | `b2da500` |
-| 6d+ | · Audio · balance · walls/gates | ⬜ **Next** | — |
+| 6d | · Balance pass (archer kiting fix, cheaper tech/cav, curve) | ✅ | `65c87b7` |
+| 6e+ | · Audio · walls/gates | ⬜ **Next** | — |
 
 ## Commands
 
@@ -169,6 +170,22 @@ losslessly so the rng-gate concern is moot; the stall needs a boxed-in base + cl
 on foundation placement); the real issues (passive AI) were found+fixed by in-browser
 testing across difficulties.
 
+**Slice 4 — Balance pass ✅** — Driven by a 4-reviewer balance-analysis Workflow
+(ai-reliability / unit-counters / economy-tech / difficulty) → synthesized
+change-set; I applied the wins and rejected 2 after in-browser testing. APPLIED:
+archer kiting fix (speed 48→52 so it out-paces spearmen — the broken RPS leg; +hp
+40, +atk 5); cheaper costs (stable wood 150→100, archery 175→150, cavalry food
+70→55, Iron gold 300→200, watch-tower stone 100→60); difficulty curve (hard
+armyThreshold 9→7 so it's no longer the *slowest* to attack; medium/hard
+villagerTarget −1). REJECTED after testing: the "Stable before Archery" reorder
+(delayed the army + left the AI with cavalry but no archers), and the gold-weighted
+gather (wrong premise — wood/food are the binding constraints; the AI already piles
+up surplus gold). Verified: all 3 difficulties still attack + win (easy 800/3200,
+medium 6400/8000, hard 6400/8000 — hard cured); counter triangle intact (17/13/5 +
+kiting). **Still situational:** the AI fields cavalry / reaches Iron only with surplus
+— a deeper build-order rework (build archery+stable in the opening without pausing
+the army) is the real fix; the aggression-vs-diversity tension is genuine.
+
 **Remaining slices** — see "Next up" below.
 
 ## Deferred backlog (carry-over)
@@ -219,17 +236,17 @@ testing across difficulties.
 
 ## Next up — Phase 6 remaining slices
 
-Tech & ages (1) + QoL/UI (2) + cavalry & counters (3) are done. Remaining grab-bag,
-**one reviewable slice at a time** (stop + review per slice). Reuse the command buffer
-for any new player actions; keep new sim state JSON-safe + serialized; route effective-
-stat reads through `tech.ts` where relevant.
+Slices 1–4 (tech & ages, QoL/UI, cavalry & counters, balance) are done. Remaining
+grab-bag, **one reviewable slice at a time** (stop + review per slice). Reuse the
+command buffer for any new player actions; keep new sim state JSON-safe + serialized.
 
-- [ ] **Balance pass** — tune costs/stats/AI thresholds so the AI fields cavalry/reaches
-      Iron more reliably and the difficulty curve feels right; AI smoke-test per tier.
-      (Highest-value next slice — the AI economy is functional but conservative.)
 - [ ] **Audio (CC0)** — selection/command/combat SFX + ambient; credit in ASSETS.md.
-      View-side (`<audio>`/WebAudio), driven by sim events; never inside the deterministic tick.
+      View-side (`<audio>`/WebAudio), driven by sim events; never inside the deterministic
+      tick. (Recommended next — self-contained, no sim risk.)
 - [ ] **Walls / gates** — drag-placed wall segments + an owner-aware open/close gate
       (needs occupancy/pathfinding that knows the owner). Its own focused slice.
+- [ ] **(stretch) AI combined-arms build order** — make the AI reliably field cavalry/
+      archers + reach Iron by building archery+stable in the opening WITHOUT pausing the
+      army (the unsolved tension from slices 3–4). Risky — verify all tiers still attack+win.
 - [ ] Per slice: review → fix → verify in browser → update README + this file →
       commit → push → stop.
