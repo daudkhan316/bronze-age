@@ -6,7 +6,7 @@ the next phase's task list. The original brief is in [`PROMPT.md`](PROMPT.md).
 **Update this file at the end of every phase**, commit, and push. It is written
 to be self-sufficient so work resumes cleanly in a fresh context.
 
-Last updated: **Phase 6, slice 1 (tech & ages)**.
+Last updated: **Phase 6, slice 2 (QoL/UI)**.
 
 ## Status
 
@@ -20,7 +20,8 @@ Last updated: **Phase 6, slice 1 (tech & ages)**.
 | 5 | Enemy AI + match flow | ✅ | `59c0489` |
 | 6 | Depth — **built in slices** | 🔨 in progress | — |
 | 6a | · Tech tree & ages | ✅ | `01502be` |
-| 6b+ | · Minimap · control groups · save/load UI · audio · balance · walls/gates | ⬜ **Next** | — |
+| 6b | · QoL/UI (minimap · control groups · save/load) | ✅ | `2943468` |
+| 6c+ | · Audio · balance · walls/gates | ⬜ **Next** | — |
 
 ## Commands
 
@@ -141,6 +142,16 @@ AI teches by BANKING (pauses unit production to afford its next tech goal). Buil
 a subagent (AI tech layer) against the tech contracts. Review: 2 reviewers; fixed
 research/death tick-race, tower counter-bonus, AI stone food-guard, AI Iron banking.
 
+**Slice 2 — QoL/UI ✅ (`2943468`)** — All pure view state (never serialized).
+Minimap (`src/render/drawMinimap.ts`): a corner canvas — fog-gated terrain + owned/
+enemy blips + the camera viewport projected back to a trapezoid; click/drag to
+recentre. Control groups in `SelectionController` (Ctrl/Cmd+1–9 bind, 1–9 recall;
+prunes dead, no-op when unbound; `Input` preventDefaults Ctrl+Digit vs browser tab
+switching). Save/load toolbar → `localStorage` via `Game.serialize/deserialize`;
+`GameSnapshot` gains a `version` (SAVE_VERSION) so an incompatible save is rejected
+cleanly. Review: 1 reviewer (mostly self-retracted); fixed save-version guard,
+unbound-group no-op, hot-reload listener cleanup.
+
 **Remaining slices** — see "Next up" below.
 
 ## Deferred backlog (carry-over)
@@ -160,10 +171,11 @@ research/death tick-race, tower counter-bonus, AI stone food-guard, AI Iron bank
   the AI's `placeNear` spirals up to ~18 rings — fine at tested scales (ran clean on
   48×48), but a node-tile index would make it O(1) for the 96×96 map. Same O(nodes)
   pattern as `resourceNodeAtTile`.
-- **[save]** `GameSnapshot` doesn't store the `MatchConfig` (difficulty/start
-  resources) — the world already carries `Player.difficulty`/`AiMemory`, so a loaded
-  game plays correctly, but it can't *display* its own config. Add a `config` field if
-  a save/load UI needs it (Phase 6).
+- **[save]** Save/load UI shipped (slice 2: one `localStorage` slot, `GameSnapshot`
+  now has a `version`). It still doesn't store the `MatchConfig` (difficulty/start
+  resources) — the world carries `Player.difficulty`/`AiMemory` so a loaded game plays
+  correctly, but it can't *display* its original config. Multiple save slots / file
+  import-export also deferred.
 - **[UX]** Command-buffer 1-tick lag: a placement ghost shows valid, the player
   clicks, placement mode exits, but if resources drop within that tick the executor
   silently no-ops the build (no foundation, no feedback). Rare (needs two spends in
@@ -185,21 +197,15 @@ research/death tick-race, tower counter-bonus, AI stone food-guard, AI Iron bank
 
 ## Next up — Phase 6 remaining slices
 
-Tech & ages (slice 1) is done. Remaining grab-bag, **one reviewable slice at a time**
-(stop + review per slice). Suggested order: QoL/UI first, then audio + balance, then
-the heavier content. Reuse the command buffer for any new player actions; keep new sim
-state JSON-safe + serialized; route effective-stat reads through `tech.ts` where relevant.
+Tech & ages (slice 1) + QoL/UI (slice 2) are done. Remaining grab-bag, **one
+reviewable slice at a time** (stop + review per slice). Reuse the command buffer for
+any new player actions; keep new sim state JSON-safe + serialized; route effective-
+stat reads through `tech.ts` where relevant.
 
-- [ ] **Minimap** — a corner overview (terrain + owned/enemy buildings + units within
-      fog), click-to-recenter / drag-to-pan the camera. Pure view; reads sim + fog.
-- [ ] **Control groups** (Ctrl+1–9 set, 1–9 recall) — view-state selection groups
-      (like selection itself; not serialized).
-- [ ] **Save/load UI** — buttons that `Game.serialize()` to a download / localStorage
-      and restore via `Game.deserialize`. Add `MatchConfig` (difficulty/start resources)
-      to `GameSnapshot` so a loaded game can show its settings (see backlog).
 - [ ] **Walls / gates + age-gated units** — finish the defensive structures (drag-placed
       wall segments + an open/close gate) and add an age-3 unit (cavalry / swordsman).
 - [ ] **Audio (CC0)** — selection/command/combat SFX + ambient; credit in ASSETS.md.
+      View-side (`<audio>`/WebAudio), driven by sim events; never inside the deterministic tick.
 - [ ] **Balance pass** — tune costs/stats/AI thresholds (incl. AI Iron reachability +
       tower range metric); AI difficulty smoke-test.
 - [ ] Per slice: review → fix → verify in browser → update README + this file →
