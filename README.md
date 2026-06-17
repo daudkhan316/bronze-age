@@ -21,15 +21,16 @@ Requires Node 18+ (developed on Node 20). A modern desktop browser (Chrome/Safar
 
 ---
 
-## Current status — Phase 6 (Depth): tech & ages · QoL/UI · cavalry · balance ✅
+## Current status — Phase 6 (Depth): tech & ages · QoL/UI · cavalry · balance · audio ✅
 
 Phase 6 (built in slices) so far adds **research & ages**, a **quality-of-life UI
-layer**, and a **cavalry unit + counter triangle** on top of the Phase 5 match.
-Advance **Stone → Bronze → Iron**, build a **Blacksmith** for upgrades + a **Watch
-Tower** that shoots back, raise **Cavalry** at a **Stable** (spearmen counter
-cavalry, cavalry run down archers), and play with a **minimap**, **control
-groups**, and **save/load**. The AI techs up and fields a combined-arms force.
-_(Remaining slices: audio, balance, walls/gates.)_
+layer**, a **cavalry unit + counter triangle**, and **sound** on top of the Phase
+5 match. Advance **Stone → Bronze → Iron**, build a **Blacksmith** for upgrades + a
+**Watch Tower** that shoots back, raise **Cavalry** at a **Stable** (spearmen
+counter cavalry, cavalry run down archers), and play with a **minimap**, **control
+groups**, **save/load**, and **procedural sound effects** (selection/orders,
+combat, completion chimes, victory/defeat — `M` or the 🔊 toolbar button to mute).
+The AI techs up and fields a combined-arms force. _(Remaining slices: walls/gates.)_
 
 ### Controls
 
@@ -170,6 +171,7 @@ src/
 - **Divergence — defensive structures partial.** The tech slice adds the Watch Tower; walls/gates (drag-placement + open/close) are deferred to a later Phase 6 slice.
 - **A unit counter triangle.** Cavalry (a new data-driven `UnitKind` trained at the age-2 Stable) is fast and tanky; the `DAMAGE_BONUS` table makes **spearmen wreck cavalry**, **cavalry run down archers**, and archers harry villagers — so unit composition matters. Everything is data-driven (new `UnitKind`/`BuildingKind` + table entries + a sprite); the generic movement/combat/fog/training/command systems needed no changes. **The AI economy was substantially fixed here:** a latent bug from the tech slice had it pausing unit production to bank for tech and secondary buildings, which silently starved its army; the AI now builds tech/extra buildings opportunistically and reliably masses + attacks at every difficulty (easy stays in the Stone Age and rushes; medium/hard tech up). It fields cavalry when it has the surplus.
 - **QoL/UI is pure view state.** The **minimap** (`drawMinimap.ts`) is its own small canvas that reads the map, world and the human's fog and projects the camera's viewport back to a corner overview; clicking it just moves the camera. **Control groups** (Ctrl+1–9 bind / 1–9 recall) live in `SelectionController` like the selection itself — never serialized; recall prunes dead units. None of this enters the ECS world or a save. **Save/load** serialises `Game.serialize()` to a single `localStorage` slot and restores via `Game.deserialize`, rebuilding the view session around the loaded game; the snapshot carries a `version` so an incompatible save is rejected cleanly rather than corrupting the run.
+- **Audio is a one-way sim→view channel, never in the tick.** Sound is a view concern, but combat/economy events originate in the deterministic sim. So the sim *emits* transient `GameEvent`s into an `EventBuffer` (`src/game/events.ts`) — the mirror image of the command buffer, flowing out instead of in — and the view drains it each rendered frame to play sounds. The buffer is **never serialized and never read by sim code**, so it can't perturb determinism (proven: a save/restored copy stays byte-identical to the live game across many ticks with events wired in). Combat sounds are **fog-gated** (you only hear what you can see — but you always hear *your own* units/buildings die); train/build chimes are owner-gated to you. **Every SFX is synthesised procedurally** with WebAudio (`SoundBank.ts`) — no sampled asset files, so it's original/CC0, tiny, and swappable for real samples behind one `play()` call. The AudioContext is unlocked on the first user gesture (browser autoplay policy); mute (`M` / 🔊 button) persists.
 
 ### Strictness / quality bar
 
@@ -185,7 +187,7 @@ Full TypeScript strict mode, plus `noUncheckedIndexedAccess`, `exactOptionalProp
 - **Phase 3 — Buildings & construction** ✅ (placement UI, villager-built, Barracks + infantry)
 - **Phase 4 — Combat** ✅ (HP/armor, melee + ranged, projectiles, attack-move, death, fog of war)
 - **Phase 5 — Enemy AI + match flow** ✅ (lobby, rule-based AI, per-tick command buffer, win/lose)
-- **Phase 6 — Depth** (built in slices): **tech tree & ages** ✅ · **QoL/UI** ✅ (minimap, control groups, save/load) · **cavalry & counters** ✅ (Stable, counter triangle, AI economy fixes) · **balance pass** ✅ (archer kiting fix, cheaper tech/cavalry, difficulty curve) · _next slices:_ audio, walls/gates
+- **Phase 6 — Depth** (built in slices): **tech tree & ages** ✅ · **QoL/UI** ✅ (minimap, control groups, save/load) · **cavalry & counters** ✅ (Stable, counter triangle, AI economy fixes) · **balance pass** ✅ (archer kiting fix, cheaper tech/cavalry, difficulty curve) · **audio** ✅ (procedural WebAudio SFX, sim→view event channel, fog-gated combat) · _next slice:_ walls/gates
 
 ## Project docs
 

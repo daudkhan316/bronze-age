@@ -9,6 +9,7 @@ import {
 } from "@/game/components";
 import { effectiveArmor } from "@/game/tech";
 import type { Occupancy } from "@/map/Occupancy";
+import type { EventBuffer } from "@/game/events";
 import { worldToTile } from "@/math/iso";
 
 /** A candidate attack target with its world position and kind. */
@@ -148,14 +149,28 @@ export function applyDamage(world: World, target: Entity, dmg: number): boolean 
 /**
  * Reap entities at or below 0 hp: free any building footprint in `occ`, then
  * destroy. Collects first, then destroys, so it's safe regardless of iteration.
+ *
+ * Optionally emits a view-facing `unit_died` / `building_destroyed` event per
+ * reaped entity (for audio). The event carries the dying entity's position,
+ * captured before it's destroyed, so the view can fog-gate the sound.
  */
-export function reapDead(world: World, occ: Occupancy): void {
+export function reapDead(world: World, occ: Occupancy, events?: EventBuffer): void {
   const dead: Entity[] = [];
   for (const [e, u] of world.query(CUnit)) {
-    if (u.hp <= 0) dead.push(e);
+    if (u.hp <= 0) {
+      if (events !== undefined) {
+        const tr = world.get(e, CTransform);
+        events.emit("unit_died", u.owner, tr?.x ?? 0, tr?.y ?? 0);
+      }
+      dead.push(e);
+    }
   }
   for (const [e, b] of world.query(CBuilding)) {
     if (b.hp <= 0) {
+      if (events !== undefined) {
+        const tr = world.get(e, CTransform);
+        events.emit("building_destroyed", b.owner, tr?.x ?? 0, tr?.y ?? 0);
+      }
       occ.setRect(b.tx, b.ty, b.w, b.h, false);
       dead.push(e);
     }

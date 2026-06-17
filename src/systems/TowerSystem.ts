@@ -4,6 +4,7 @@ import { CTower, CBuilding, CTransform, BUILDING_DEFS } from "@/game/components"
 import { findNearestEnemy } from "@/game/combat";
 import { spawnProjectile } from "@/game/spawn";
 import { towerAttack } from "@/game/tech";
+import type { EventBuffer } from "@/game/events";
 
 /**
  * Buildings that fight (Phase 6): a complete Watch Tower auto-fires an arrow at
@@ -19,6 +20,8 @@ import { towerAttack } from "@/game/tech";
  */
 export class TowerSystem implements System {
   readonly name = "tower";
+
+  constructor(private readonly events: EventBuffer) {}
 
   update(world: World, dt: number): void {
     for (const [e, t] of world.query(CTower)) {
@@ -39,6 +42,7 @@ export class TowerSystem implements System {
       // Fires as a "tower" projectile: ranged (pierce-armor) resolution but no
       // unit counter-bonus (it's a building, not an archer).
       spawnProjectile(world, tr.x, tr.y, hit.entity, hit.x, hit.y, towerAttack(world, b.owner), "tower", b.owner);
+      this.events.emit("projectile_fired", b.owner, tr.x, tr.y);
       t.cooldown = def.attackCooldown ?? 2;
     }
   }

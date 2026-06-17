@@ -14,6 +14,7 @@ import { spawnUnit } from "@/game/spawn";
 import { standableTileNear } from "@/pathfinding/astar";
 import type { GameMap } from "@/map/GameMap";
 import type { Occupancy } from "@/map/Occupancy";
+import type { EventBuffer } from "@/game/events";
 
 /**
  * Per-tick economy bookkeeping: keeps every player's population counters in
@@ -41,6 +42,7 @@ export class EconomySystem implements System {
   constructor(
     private readonly map: GameMap,
     private readonly occ: Occupancy,
+    private readonly events: EventBuffer,
   ) {}
 
   update(world: World, _dt: number): void {
@@ -127,6 +129,9 @@ export class EconomySystem implements System {
       }
 
       spawnUnit(world, trains, spot.tx, spot.ty, b.owner);
+      // Owner-gated in the view (only the local player hears their own "ready"
+      // chime), so position is unused here.
+      this.events.emit("unit_trained", b.owner, 0, 0);
       tq.queued--;
       tq.progress = 0;
       // Count the new unit locally so a sibling building this same tick sees the

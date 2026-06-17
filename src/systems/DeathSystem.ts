@@ -1,19 +1,24 @@
 import type { System } from "@/ecs/System";
 import type { World } from "@/ecs/World";
 import type { Occupancy } from "@/map/Occupancy";
+import type { EventBuffer } from "@/game/events";
 import { reapDead } from "@/game/combat";
 
 /**
  * Removes entities reduced to 0 hp, after all of the tick's damage has been
  * applied (so combat/projectile systems never destroy entities mid-iteration).
- * Frees a destroyed building's footprint in the occupancy grid.
+ * Frees a destroyed building's footprint in the occupancy grid, and emits a
+ * death/destruction event per reaped entity for view-side feedback (audio).
  */
 export class DeathSystem implements System {
   readonly name = "death";
 
-  constructor(private readonly occ: Occupancy) {}
+  constructor(
+    private readonly occ: Occupancy,
+    private readonly events: EventBuffer,
+  ) {}
 
   update(world: World, _dt: number): void {
-    reapDead(world, this.occ);
+    reapDead(world, this.occ, this.events);
   }
 }

@@ -19,6 +19,7 @@ import { drawWorld } from "@/render/drawWorld";
 import { drawFog } from "@/render/drawFog";
 import { drawPlacementGhost } from "@/render/drawPlacement";
 import { drawMinimap, minimapToWorld } from "@/render/drawMinimap";
+import { SoundBank } from "@/audio/SoundBank";
 import {
   CUnit,
   CTransform,
@@ -67,11 +68,14 @@ const minimapCanvas = minimapEl instanceof HTMLCanvasElement ? minimapEl : null;
 const minimapCtx = minimapCanvas?.getContext("2d") ?? null;
 /** localStorage key for the single quick-save slot. */
 const SAVE_KEY = "bronze-age-save";
+/** localStorage key remembering the player's mute preference. */
+const MUTE_KEY = "bronze-age-muted";
 
-// Persistent across matches: renderer + raw input + the lobby.
+// Persistent across matches: renderer + raw input + the lobby + the sound bank.
 const renderer = new Renderer(canvas);
 const input = new Input(canvas);
 const lobby = new Lobby(menu, startMatch);
+const sound = new SoundBank(localStorage.getItem(MUTE_KEY) === "1");
 
 /** Per-match state. Null while in the menu. Rebuilt on each Start. */
 interface Session {
@@ -126,6 +130,7 @@ function startMatch(config: MatchConfig): void {
 function endMatch(winner: number | null): void {
   appState = "gameover";
   const won = winner === PLAYER_ID;
+  sound.play(won ? "victory" : "defeat");
   gameover.innerHTML =
     `<div class="panel">` +
     `<h1 class="${won ? "win" : "lose"}">${won ? "Victory" : "Defeat"}</h1>` +
@@ -246,6 +251,7 @@ function issueRightClick(s: Session): void {
   const enemy = enemyAtTile(s, tile.tx, tile.ty);
   if (enemy !== null) {
     s.game.commands.enqueue({ type: "attack", owner: PLAYER_ID, units, target: enemy });
+    sound.play("attack");
     return;
   }
   const foundation = foundationAtTile(s, tile.tx, tile.ty);
@@ -253,6 +259,7 @@ function issueRightClick(s: Session): void {
     const villagers = units.filter((e) => unitKind(s, e) === "villager");
     if (villagers.length > 0) {
       s.game.commands.enqueue({ type: "assignBuild", owner: PLAYER_ID, villagers, target: foundation });
+      sound.play("command");
     }
     return;
   }
@@ -261,9 +268,11 @@ function issueRightClick(s: Session): void {
     const villagers = units.filter((e) => unitKind(s, e) === "villager");
     if (villagers.length > 0) {
       s.game.commands.enqueue({ type: "gather", owner: PLAYER_ID, units: villagers, node: node.entity });
+      sound.play("command");
     }
   } else {
     s.game.commands.enqueue({ type: "move", owner: PLAYER_ID, units, tx: tile.tx, ty: tile.ty });
+    sound.play("command");
   }
 }
 
@@ -306,6 +315,7 @@ function issueAttackMove(s: Session, goal: GridPoint): void {
   const units = selectedPlayerUnits(s);
   if (units.length === 0) return;
   s.game.commands.enqueue({ type: "attackMove", owner: PLAYER_ID, units, tx: goal.tx, ty: goal.ty });
+  sound.play("attack");
 }
 
 /** True if the player has at least one of their own units selected. */
@@ -360,6 +370,7 @@ function trainFromSelectedBuilding(s: Session): void {
   const cost = UNIT_STATS[trains].cost;
   if (!canAfford(s, cost) || player.popUsed + queuedForPlayer(s) >= player.popCap) return;
   s.game.commands.enqueue({ type: "train", owner: PLAYER_ID, building: be, unit: trains });
+  sound.play("ui");
 }
 
 /** Enqueue a research command for the selected building (executor re-validates). */
@@ -367,6 +378,7 @@ function researchFromSelectedBuilding(s: Session, id: UpgradeId): void {
   const be = s.selection.selectedBuilding;
   if (be === null) return;
   s.game.commands.enqueue({ type: "research", owner: PLAYER_ID, building: be, upgrade: id });
+  sound.play("ui");
 }
 
 /** The own incomplete building (foundation) covering tile (tx,ty), or null. */
@@ -390,6 +402,7 @@ function placeBuildingAtGhost(s: Session): boolean {
     ty: ghost.ty,
     builders: [],
   });
+  sound.play("place");
   return true;
 }
 
@@ -431,6 +444,62 @@ function handleControlGroups(s: Session): void {
   }
 }
 
+/**
+ * Drain the simulation's view-event buffer and play feedback sounds. Combat
+ * events are fog-gated (you only hear what you can see); your own train/build
+ * completions are owner-gated. Called once per rendered frame, so it catches the
+ * events from however many sim ticks ran since the last frame.
+ */
+function routeSimAudio(s: Session): void {
+  const fog = s.game.fog;
+  for (const ev of s.game.events.drain()) {
+    switch (ev.type) {
+      case "projectile_fired":
+      case "melee_hit":
+      case "unit_died":
+      case "building_destroyed": {
+        // You always hear your OWN losses: a dying unit/building may have been
+        // the only thing giving vision over its tile (FogSystem re-reveals from
+        // *living* entities, and it's already reaped by the time we play this),
+        // so fog-gating would wrongly mute your forward outpost falling. Enemy
+        // and neutral combat stays fog-gated — you only hear what you can see.
+        const ownLoss =
+          (ev.type === "unit_died" || ev.type === "building_destroyed") && ev.owner === PLAYER_ID;
+        if (!ownLoss) {
+          const t = worldToTile(ev.x, ev.y);
+          if (!s.game.map.inBounds(t.tx, t.ty) || !fog.isVisible(t.tx, t.ty)) break;
+        }
+        sound.play(
+          ev.type === "projectile_fired"
+            ? "fire"
+            : ev.type === "melee_hit"
+              ? "hit"
+              : ev.type === "unit_died"
+                ? "death"
+                : "collapse",
+        );
+        break;
+      }
+      case "unit_trained":
+        if (ev.owner === PLAYER_ID) sound.play("trained");
+        break;
+      case "building_completed":
+        if (ev.owner === PLAYER_ID) sound.play("built");
+        break;
+    }
+  }
+}
+
+/** A cheap signature of the current selection (size + lowest entity id). */
+function selectionSignature(s: Session): string {
+  const sel = s.selection.selected;
+  if (sel.size === 0) return "";
+  let min = Infinity;
+  for (const e of sel) if (e < min) min = e;
+  return `${sel.size}:${min}`;
+}
+
+let prevSelSig = "";
 let lastPanelHtml = "";
 
 /** Rebuild the context command panel from the current selection / placement. */
@@ -498,6 +567,10 @@ function updatePanel(s: Session): void {
 function frameGame(s: Session, frameDt: number): void {
   if (input.wasPressed("Space")) loop.togglePause();
   if (input.wasPressed("KeyG")) showGrid = !showGrid;
+  if (input.wasPressed("KeyM")) toggleMute();
+
+  // Play feedback for whatever the sim emitted since the last frame.
+  routeSimAudio(s);
 
   updateCamera(s, frameDt);
   handleControlGroups(s);
@@ -537,6 +610,14 @@ function frameGame(s: Session, frameDt: number): void {
 
   updatePanel(s);
 
+  // A new, non-empty selection (click / box / double-click / control-group
+  // recall) plays a select blip; clearing is silent.
+  const sig = selectionSignature(s);
+  if (sig !== prevSelSig) {
+    if (sig !== "") sound.play("select");
+    prevSelSig = sig;
+  }
+
   const instantaneous = frameDt > 0 ? 1 / frameDt : 0;
   fps += (instantaneous - fps) * 0.1;
 
@@ -557,8 +638,12 @@ const loop = new Loop({
       // Check the outcome BEFORE running a frame of input — so the frame that
       // decides the match doesn't also process orders against an ended game.
       const m = getMatchState(session.game.world);
-      if (m !== undefined && m.over) endMatch(m.winner);
-      else frameGame(session, frameDt);
+      if (m !== undefined && m.over) {
+        // Play the deciding tick's death/collapse (the winning blow) before the
+        // outcome jingle — frameGame, the only other drain site, is skipped now.
+        routeSimAudio(session);
+        endMatch(m.winner);
+      } else frameGame(session, frameDt);
     }
     input.endFrame();
   },
@@ -573,10 +658,19 @@ if (controls instanceof HTMLElement) {
     const btn = t.closest("[data-action]");
     if (!(btn instanceof HTMLElement)) return;
     const action = btn.getAttribute("data-action") ?? "";
-    if (action === "cancel-place") session.placement.cancel();
-    else if (action === "train") trainFromSelectedBuilding(session);
-    else if (action.startsWith("research:")) researchFromSelectedBuilding(session, action.slice(9) as UpgradeId);
-    else if (action.startsWith("build:")) session.placement.begin(action.slice(6) as BuildingKind);
+    // train / research play their own sound on a successful enqueue; the other
+    // two (begin-placement, cancel) get a plain UI click here.
+    if (action === "cancel-place") {
+      session.placement.cancel();
+      sound.play("ui");
+    } else if (action === "train") {
+      trainFromSelectedBuilding(session);
+    } else if (action.startsWith("research:")) {
+      researchFromSelectedBuilding(session, action.slice(9) as UpgradeId);
+    } else if (action.startsWith("build:")) {
+      session.placement.begin(action.slice(6) as BuildingKind);
+      sound.play("ui");
+    }
     if (btn instanceof HTMLButtonElement) btn.blur();
   });
 }
@@ -593,6 +687,20 @@ function flashToolbar(msg: string): void {
   saveStatusTimer = window.setTimeout(() => {
     el.textContent = "";
   }, 1600);
+}
+
+/** Reflect the current mute state on the toolbar button. */
+function updateMuteButton(): void {
+  const el = document.getElementById("mutebtn");
+  if (el instanceof HTMLElement) el.textContent = sound.isMuted ? "🔇" : "🔊";
+}
+
+/** Toggle sound on/off, persist the choice, and show a brief toast. */
+function toggleMute(): void {
+  const muted = sound.toggleMute();
+  localStorage.setItem(MUTE_KEY, muted ? "1" : "0");
+  updateMuteButton();
+  flashToolbar(muted ? "Muted" : "Sound on");
 }
 
 /** Quick-save the live match to localStorage (a single slot). */
@@ -659,9 +767,14 @@ if (toolbar instanceof HTMLElement) {
     const btn = t.closest("[data-action]");
     if (!(btn instanceof HTMLElement)) return;
     const action = btn.getAttribute("data-action");
-    if (action === "save") saveGame();
-    else if (action === "load") loadGame();
-    else if (action === "menu" && session !== null) backToMenu();
+    if (action === "mute") {
+      toggleMute();
+    } else {
+      sound.play("ui");
+      if (action === "save") saveGame();
+      else if (action === "load") loadGame();
+      else if (action === "menu" && session !== null) backToMenu();
+    }
     if (btn instanceof HTMLButtonElement) btn.blur();
   };
   toolbar.addEventListener("click", onToolbarClick);
@@ -704,6 +817,17 @@ if (minimapCanvas !== null) {
     window.removeEventListener("mouseup", onUp);
   });
 }
+
+// WebAudio can't start until a user gesture; resume the context on the first
+// interaction (the lobby's Start click satisfies this before any match begins).
+const resumeAudio = (): void => sound.resume();
+window.addEventListener("pointerdown", resumeAudio, { once: true });
+window.addEventListener("keydown", resumeAudio, { once: true });
+hotDisposers.push(() => {
+  window.removeEventListener("pointerdown", resumeAudio);
+  window.removeEventListener("keydown", resumeAudio);
+});
+updateMuteButton();
 
 // Start at the lobby.
 lobby.show();

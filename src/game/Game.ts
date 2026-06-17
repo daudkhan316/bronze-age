@@ -26,6 +26,7 @@ import { AiSystem } from "@/systems/AiSystem";
 import { spawnUnit, spawnResourceNode, spawnBuilding, spawnPlayer } from "@/game/spawn";
 import { canStand } from "@/pathfinding/astar";
 import { CommandBuffer, executeCommand } from "@/game/commands";
+import { EventBuffer } from "@/game/events";
 import {
   PLAYER_ID,
   AI_ID,
@@ -94,6 +95,12 @@ export class Game {
   private readonly fogs = new Map<number, Fog>();
   /** Pending player + AI intents, applied at the start of each tick. */
   readonly commands = new CommandBuffer();
+  /**
+   * View-facing simulation events emitted during the tick (deaths, arrows,
+   * completions). The view drains these each frame for feedback (audio). NOT
+   * serialized and never read by sim code, so it can't affect determinism.
+   */
+  readonly events = new EventBuffer();
   /** Simulation RNG — never use Math.random() in sim code, draw from this. */
   readonly rng: Random;
   /** Authoritative simulation time, in ticks. Part of the save snapshot. */
@@ -131,17 +138,17 @@ export class Game {
     // (vision) → ai (decides on fresh fog, enqueues for next tick).
     this.systems = [
       new GatherSystem(this.map, this.occ),
-      new BuildSystem(this.map, this.occ),
-      new CombatSystem(this.map, this.occ),
-      new TowerSystem(), // building-attackers fire after units; arrows fly this tick
+      new BuildSystem(this.map, this.occ, this.events),
+      new CombatSystem(this.map, this.occ, this.events),
+      new TowerSystem(this.events), // building-attackers fire after units; arrows fly this tick
       new MovementSystem(this.map, this.occ),
       new ProjectileSystem(),
       // Research before Death so a tech completing on the same tick its building
       // is destroyed still applies (Death reaps the building + its components).
       new ResearchSystem(), // advance tech + apply upgrades/age
-      new DeathSystem(this.occ),
+      new DeathSystem(this.occ, this.events),
       new MatchSystem(),
-      new EconomySystem(this.map, this.occ),
+      new EconomySystem(this.map, this.occ, this.events),
       ...fogSystems,
       new AiSystem(this.map, this.occ, this.commands, this.rng, (owner) => this.fogs.get(owner)),
     ];

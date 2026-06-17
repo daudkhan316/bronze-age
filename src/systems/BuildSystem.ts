@@ -14,6 +14,7 @@ import { tileRangeToBuilding, approachTileForBuilding } from "@/game/economy";
 import { worldToTile } from "@/math/iso";
 import type { GameMap } from "@/map/GameMap";
 import type { Occupancy } from "@/map/Occupancy";
+import type { EventBuffer } from "@/game/events";
 import { findPath } from "@/pathfinding/astar";
 
 /**
@@ -46,6 +47,7 @@ export class BuildSystem implements System {
   constructor(
     private readonly map: GameMap,
     private readonly occ: Occupancy,
+    private readonly events: EventBuffer,
   ) {}
 
   update(world: World, dt: number): void {
@@ -113,6 +115,9 @@ export class BuildSystem implements System {
             // cancel/destroy path must clear it via Game.setBuildingOccupancy.
             building.complete = true;
             building.hp = building.maxHp;
+            // Owner-gated in the view (only the local player hears their own
+            // construction chime), so position is unused here.
+            this.events.emit("building_completed", building.owner, 0, 0);
             world.remove(bd.target, CConstruction);
             world.remove(e, CBuild);
           }

@@ -24,6 +24,7 @@ import { effectiveAttack } from "@/game/tech";
 import { worldToTile } from "@/math/iso";
 import type { GameMap } from "@/map/GameMap";
 import type { Occupancy } from "@/map/Occupancy";
+import type { EventBuffer } from "@/game/events";
 import { findPath } from "@/pathfinding/astar";
 
 /**
@@ -49,6 +50,7 @@ export class CombatSystem implements System {
   constructor(
     private readonly map: GameMap,
     private readonly occ: Occupancy,
+    private readonly events: EventBuffer,
   ) {}
 
   update(world: World, dt: number): void {
@@ -125,6 +127,7 @@ export class CombatSystem implements System {
                   unit.kind,
                   owner,
                 );
+                this.events.emit("projectile_fired", owner, tr.x, tr.y);
               } else {
                 // Melee: apply damage immediately (DeathSystem reaps later).
                 applyDamage(
@@ -132,6 +135,7 @@ export class CombatSystem implements System {
                   cb.target,
                   computeDamage(world, cb.target, atk, unit.kind, false),
                 );
+                this.events.emit("melee_hit", owner, tr.x, tr.y);
               }
               cb.cooldown = def.attackCooldown;
             }
