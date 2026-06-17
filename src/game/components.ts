@@ -93,8 +93,10 @@ export const UNIT_STATS: Record<UnitKind, UnitDef> = {
     cost: { food: 35, wood: 25 }, trainTicks: 55, trainedAt: "barracks",
   },
   archer: {
-    speed: 48, radius: 11, hp: 35,
-    attack: 4, armor: 0, pierceArmor: 0, range: 5, attackCooldown: 2.5, sight: 6,
+    // Speed > spearman (50) so archers can actually kite them — the intended
+    // counter (was 48, which made kiting impossible). +hp/+atk give value too.
+    speed: 52, radius: 11, hp: 40,
+    attack: 5, armor: 0, pierceArmor: 0, range: 5, attackCooldown: 2.5, sight: 6,
     cost: { wood: 25, gold: 45 }, trainTicks: 50, trainedAt: "archery_range",
   },
   cavalry: {
@@ -102,7 +104,7 @@ export const UNIT_STATS: Record<UnitKind, UnitDef> = {
     // countered by spearmen; runs down archers. Trained at the Stable (Age 2).
     speed: 72, radius: 12, hp: 80,
     attack: 9, armor: 1, pierceArmor: 1, range: 0, attackCooldown: 2, sight: 6,
-    cost: { food: 70, gold: 20 }, trainTicks: 75, trainedAt: "stable",
+    cost: { food: 55, gold: 20 }, trainTicks: 75, trainedAt: "stable",
   },
 };
 
@@ -310,13 +312,13 @@ export const BUILDING_DEFS: Record<BuildingKind, BuildingDef> = {
   town_center: { w: 3, h: 3, cost: {}, buildTicks: 0, maxHp: 600, pop: 5, accepts: ["food", "wood", "gold", "stone"], trains: "villager", sight: 7, ageRequired: 1, label: "Town Center" },
   house: { w: 2, h: 2, cost: { wood: 30 }, buildTicks: 50, maxHp: 200, pop: 5, accepts: [], trains: null, sight: 4, ageRequired: 1, label: "House" },
   barracks: { w: 3, h: 3, cost: { wood: 120 }, buildTicks: 120, maxHp: 500, pop: 0, accepts: [], trains: "spearman", sight: 5, ageRequired: 1, label: "Barracks" },
-  archery_range: { w: 3, h: 3, cost: { wood: 175 }, buildTicks: 120, maxHp: 500, pop: 0, accepts: [], trains: "archer", sight: 5, ageRequired: 1, label: "Archery Range" },
+  archery_range: { w: 3, h: 3, cost: { wood: 150 }, buildTicks: 120, maxHp: 500, pop: 0, accepts: [], trains: "archer", sight: 5, ageRequired: 1, label: "Archery Range" },
   lumber_camp: { w: 2, h: 2, cost: { wood: 80 }, buildTicks: 35, maxHp: 300, pop: 0, accepts: ["wood"], trains: null, sight: 4, ageRequired: 1, label: "Lumber Camp" },
   mining_camp: { w: 2, h: 2, cost: { wood: 80 }, buildTicks: 35, maxHp: 300, pop: 0, accepts: ["gold", "stone"], trains: null, sight: 4, ageRequired: 1, label: "Mining Camp" },
   mill: { w: 2, h: 2, cost: { wood: 80 }, buildTicks: 35, maxHp: 300, pop: 0, accepts: ["food"], trains: null, sight: 4, ageRequired: 1, label: "Mill" },
   blacksmith: { w: 3, h: 3, cost: { wood: 150 }, buildTicks: 100, maxHp: 500, pop: 0, accepts: [], trains: null, sight: 4, ageRequired: 2, label: "Blacksmith" },
-  watch_tower: { w: 2, h: 2, cost: { wood: 50, stone: 100 }, buildTicks: 80, maxHp: 400, pop: 0, accepts: [], trains: null, sight: 8, ageRequired: 2, label: "Watch Tower", attack: 5, range: 6, attackCooldown: 1.5 },
-  stable: { w: 3, h: 3, cost: { wood: 150 }, buildTicks: 100, maxHp: 500, pop: 0, accepts: [], trains: "cavalry", sight: 5, ageRequired: 2, label: "Stable" },
+  watch_tower: { w: 2, h: 2, cost: { wood: 50, stone: 60 }, buildTicks: 80, maxHp: 400, pop: 0, accepts: [], trains: null, sight: 8, ageRequired: 2, label: "Watch Tower", attack: 5, range: 6, attackCooldown: 1.5 },
+  stable: { w: 3, h: 3, cost: { wood: 100 }, buildTicks: 100, maxHp: 500, pop: 0, accepts: [], trains: "cavalry", sight: 5, ageRequired: 2, label: "Stable" },
 };
 
 /** Build points one builder contributes per second (× dt per tick). */
@@ -471,7 +473,7 @@ export interface UpgradeDef {
  */
 export const UPGRADE_DEFS: Record<UpgradeId, UpgradeDef> = {
   advance_bronze: { id: "advance_bronze", label: "Advance to Bronze Age", building: "town_center", ageRequired: 1, cost: { food: 400 }, researchTicks: 200, requires: null, effects: [], setsAge: 2 },
-  advance_iron: { id: "advance_iron", label: "Advance to Iron Age", building: "town_center", ageRequired: 2, cost: { food: 600, gold: 300 }, researchTicks: 300, requires: "advance_bronze", effects: [], setsAge: 3 },
+  advance_iron: { id: "advance_iron", label: "Advance to Iron Age", building: "town_center", ageRequired: 2, cost: { food: 600, gold: 200 }, researchTicks: 300, requires: "advance_bronze", effects: [], setsAge: 3 },
   forging: { id: "forging", label: "Forging (+1 melee atk)", building: "blacksmith", ageRequired: 2, cost: { food: 150 }, researchTicks: 120, requires: null, effects: [{ stat: "attack", scope: "melee", add: 1 }] },
   scale_armor: { id: "scale_armor", label: "Scale Armor (+1 armor)", building: "blacksmith", ageRequired: 2, cost: { food: 100, gold: 50 }, researchTicks: 120, requires: null, effects: [{ stat: "armor", scope: "military", add: 1 }, { stat: "pierceArmor", scope: "military", add: 1 }] },
   fletching: { id: "fletching", label: "Fletching (+1 ranged atk)", building: "blacksmith", ageRequired: 2, cost: { wood: 120, gold: 50 }, researchTicks: 120, requires: null, effects: [{ stat: "attack", scope: "ranged", add: 1 }] },

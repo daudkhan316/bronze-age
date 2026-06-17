@@ -169,8 +169,9 @@ export class AiSystem implements System {
       ) {
         this.placeNear(world, owner, "archery_range", tc.b);
       } else if (
-        // Stable (Age 2) for cavalry — ambitious difficulties only (easy keeps a
-        // simple spear/archer army). Costs wood, so it doesn't fight food-banking.
+        // Stable (Age 2, cavalry) AFTER the archery range — archers are the core
+        // ranged arm; cavalry is the premium add. Cheaper now (100 wood) + the
+        // gold-weighted gather make it affordable without delaying the attack.
         ps.age >= 2 &&
         ps.difficulty !== "easy" &&
         (!params.buildArcheryRange || ranges.length > 0) &&

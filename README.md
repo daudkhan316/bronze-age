@@ -21,7 +21,7 @@ Requires Node 18+ (developed on Node 20). A modern desktop browser (Chrome/Safar
 
 ---
 
-## Current status — Phase 6 (Depth): tech & ages · QoL/UI · cavalry ✅
+## Current status — Phase 6 (Depth): tech & ages · QoL/UI · cavalry · balance ✅
 
 Phase 6 (built in slices) so far adds **research & ages**, a **quality-of-life UI
 layer**, and a **cavalry unit + counter triangle** on top of the Phase 5 match.
@@ -185,7 +185,7 @@ Full TypeScript strict mode, plus `noUncheckedIndexedAccess`, `exactOptionalProp
 - **Phase 3 — Buildings & construction** ✅ (placement UI, villager-built, Barracks + infantry)
 - **Phase 4 — Combat** ✅ (HP/armor, melee + ranged, projectiles, attack-move, death, fog of war)
 - **Phase 5 — Enemy AI + match flow** ✅ (lobby, rule-based AI, per-tick command buffer, win/lose)
-- **Phase 6 — Depth** (built in slices): **tech tree & ages** ✅ · **QoL/UI** ✅ (minimap, control groups, save/load) · **cavalry & counters** ✅ (Stable, counter triangle, AI economy fixes) · _next slices:_ audio, balance, walls/gates
+- **Phase 6 — Depth** (built in slices): **tech tree & ages** ✅ · **QoL/UI** ✅ (minimap, control groups, save/load) · **cavalry & counters** ✅ (Stable, counter triangle, AI economy fixes) · **balance pass** ✅ (archer kiting fix, cheaper tech/cavalry, difficulty curve) · _next slices:_ audio, walls/gates
 
 ## Project docs
 
