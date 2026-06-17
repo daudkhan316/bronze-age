@@ -6,7 +6,7 @@ the next phase's task list. The original brief is in [`PROMPT.md`](PROMPT.md).
 **Update this file at the end of every phase**, commit, and push. It is written
 to be self-sufficient so work resumes cleanly in a fresh context.
 
-Last updated: **Phase 6, slice 2 (QoL/UI)**.
+Last updated: **Phase 6, slice 3 (cavalry & counters)**.
 
 ## Status
 
@@ -21,7 +21,8 @@ Last updated: **Phase 6, slice 2 (QoL/UI)**.
 | 6 | Depth — **built in slices** | 🔨 in progress | — |
 | 6a | · Tech tree & ages | ✅ | `01502be` |
 | 6b | · QoL/UI (minimap · control groups · save/load) | ✅ | `2943468` |
-| 6c+ | · Audio · balance · walls/gates | ⬜ **Next** | — |
+| 6c | · Cavalry & counter triangle (+ AI economy fixes) | ✅ | `b2da500` |
+| 6d+ | · Audio · balance · walls/gates | ⬜ **Next** | — |
 
 ## Commands
 
@@ -152,17 +153,38 @@ switching). Save/load toolbar → `localStorage` via `Game.serialize/deserialize
 cleanly. Review: 1 reviewer (mostly self-retracted); fixed save-version guard,
 unbound-group no-op, hot-reload listener cleanup.
 
+**Slice 3 — Cavalry & counter triangle ✅ (`b2da500`)** — New `cavalry` UnitKind
+(fast/tanky melee) at a new age-2 `stable`. `DAMAGE_BONUS`: spearman→cavalry +12
+(hard counter), cavalry→archer +4 / →villager +2 ⇒ spear > cav > archer triangle
+(verified 17/13/8 per hit). Fully data-driven (UnitKind/BuildingKind + table entries
++ cavalry sprite + stable palette in drawWorld); generic systems unchanged. AI builds
+a stable + fields cavalry opportunistically. **Big AI economy fix:** the 6a tech/
+building resource-banking paused unit production so hard it silently starved the AI's
+army (only spearmen, or passive/never-attacks). Removed Iron + blacksmith-upgrade +
+secondary-building banking (now opportunistic); kept only a brief Bronze food-bank for
+medium/hard (easy never techs); lowered hard armyThreshold 11→9 (13 villagerTarget).
+All difficulties now mass + attack + win (easy ~800/3200, med 6400/8000, hard
+10400/12000). Review: 1 reviewer (findings rejected — JSON round-trips numbers
+losslessly so the rng-gate concern is moot; the stall needs a boxed-in base + clears
+on foundation placement); the real issues (passive AI) were found+fixed by in-browser
+testing across difficulties.
+
 **Remaining slices** — see "Next up" below.
 
 ## Deferred backlog (carry-over)
 
-- **[P6 later slices]** From slice 1 (tech & ages): **walls / gates** (drag-placement +
-  open/close) and **age-gated units** (e.g. cavalry / a stronger melee unit) deferred to
-  keep the slice reviewable. **Watch-tower range** is measured centre-to-tile (vs the
-  footprint-edge metric units use) — ~1 tile short on a 2×2, cosmetic. **AI rarely
-  reaches Iron** (gated behind 2 Blacksmith upgrades + 600f/300g — only very long games);
-  a tuning lever, not a bug. **Mid-research building death** forfeits the paid cost (no
-  refund) — by design, like demolish.
+- **[P6 later slices]** **Walls / gates** (drag-placement + owner-aware open/close —
+  needs occupancy/pathfinding that distinguishes owner) still deferred; cavalry shipped
+  in slice 3. **Watch-tower range** is centre-to-tile (~1 tile short on a 2×2, cosmetic).
+  **Mid-research building death** forfeits the paid cost (no refund) — by design.
+- **[AI / balance]** The AI fields **cavalry / the Stable only opportunistically** (when
+  it has surplus) — common in long/rich games, rare in tight ones; it rarely reaches the
+  **Iron age** (600f/300g, no banking for it). Higher difficulties are a bit slower to
+  first-attack than Phase 5 (the Bronze food-bank trade-off). All tuning levers for the
+  balance slice, not bugs — every difficulty reliably attacks + wins. **Degenerate
+  edge:** if `placeNear` can't find any build spot for ~18 rings (a fully boxed-in base),
+  the AI can't place that building; its army still fights. Essentially impossible on the
+  open-quadrant maps.
 - **[done in P5]** Win/lose + match setup ✅; real owner-1 AI replacing the debug
   squad ✅; per-tick command buffer ✅. Console `spawn`/`spawnBuilding` hooks remain
   as debug aids (harmless; on `window`). **Owner stances** (move-only vs aggressive
@@ -197,16 +219,17 @@ unbound-group no-op, hot-reload listener cleanup.
 
 ## Next up — Phase 6 remaining slices
 
-Tech & ages (slice 1) + QoL/UI (slice 2) are done. Remaining grab-bag, **one
-reviewable slice at a time** (stop + review per slice). Reuse the command buffer for
-any new player actions; keep new sim state JSON-safe + serialized; route effective-
+Tech & ages (1) + QoL/UI (2) + cavalry & counters (3) are done. Remaining grab-bag,
+**one reviewable slice at a time** (stop + review per slice). Reuse the command buffer
+for any new player actions; keep new sim state JSON-safe + serialized; route effective-
 stat reads through `tech.ts` where relevant.
 
-- [ ] **Walls / gates + age-gated units** — finish the defensive structures (drag-placed
-      wall segments + an open/close gate) and add an age-3 unit (cavalry / swordsman).
+- [ ] **Balance pass** — tune costs/stats/AI thresholds so the AI fields cavalry/reaches
+      Iron more reliably and the difficulty curve feels right; AI smoke-test per tier.
+      (Highest-value next slice — the AI economy is functional but conservative.)
 - [ ] **Audio (CC0)** — selection/command/combat SFX + ambient; credit in ASSETS.md.
       View-side (`<audio>`/WebAudio), driven by sim events; never inside the deterministic tick.
-- [ ] **Balance pass** — tune costs/stats/AI thresholds (incl. AI Iron reachability +
-      tower range metric); AI difficulty smoke-test.
+- [ ] **Walls / gates** — drag-placed wall segments + an owner-aware open/close gate
+      (needs occupancy/pathfinding that knows the owner). Its own focused slice.
 - [ ] Per slice: review → fix → verify in browser → update README + this file →
       commit → push → stop.
