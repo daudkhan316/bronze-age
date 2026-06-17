@@ -120,6 +120,34 @@ export class SelectionController {
   }
 
   /**
+   * Control groups 1–9 (index 0 unused) — pure VIEW state, never serialized.
+   * `setGroup` snapshots the current unit selection; `recallGroup` makes it the
+   * selection again (pruning any units that have since died).
+   */
+  private readonly groups: Array<Set<Entity>> = Array.from({ length: 10 }, () => new Set<Entity>());
+
+  /** Bind control group `n` (1–9) to the current unit selection. */
+  setGroup(n: number): void {
+    if (n < 1 || n > 9) return;
+    this.groups[n] = new Set(this.selected);
+  }
+
+  /** Re-select control group `n` (1–9), dropping any members that have died. */
+  recallGroup(n: number, world: World): void {
+    if (n < 1 || n > 9) return;
+    const group = this.groups[n];
+    // No-op on an unbound (empty) group — recalling nothing shouldn't wipe the
+    // current selection (matches RTS convention).
+    if (group === undefined || group.size === 0) return;
+    this.selected.clear();
+    this.selectedBuilding = null;
+    for (const e of group) {
+      if (world.isAlive(e)) this.selected.add(e);
+      else group.delete(e); // keep the stored group tidy
+    }
+  }
+
+  /**
    * Current marquee rect for rendering, normalized so x0<=x1 / y0<=y1; null
    * unless a box drag is in progress this frame.
    */

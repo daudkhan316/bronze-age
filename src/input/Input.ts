@@ -102,6 +102,8 @@ export class Input {
     this.held.add(e.code);
     // Stop the page from scrolling on arrows/space.
     if (e.code.startsWith("Arrow") || e.code === "Space") e.preventDefault();
+    // Control groups: stop Ctrl/Cmd+1–9 from switching browser tabs.
+    if ((e.ctrlKey || e.metaKey) && e.code.startsWith("Digit")) e.preventDefault();
   };
 
   private onKeyUp = (e: KeyboardEvent): void => {

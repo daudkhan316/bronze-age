@@ -21,13 +21,13 @@ Requires Node 18+ (developed on Node 20). A modern desktop browser (Chrome/Safar
 
 ---
 
-## Current status — Phase 6 (Depth): Tech tree & ages ✅
+## Current status — Phase 6 (Depth): Tech & ages + QoL/UI ✅
 
-The first slice of Phase 6: **research and ages** layered on the full Phase 5
-match. Advance **Stone → Bronze → Iron**, build a **Blacksmith** to research
-upgrades that make your units measurably stronger, and a **Watch Tower** that
-shoots back. The AI techs up too. _(Phase 6 is a grab-bag built in slices —
-minimap, control groups, save/load UI, audio and balance come in later slices.)_
+Phase 6 (built in slices) so far adds **research & ages** and a **quality-of-life
+UI layer** on top of the Phase 5 match. Advance **Stone → Bronze → Iron**, build a
+**Blacksmith** for upgrades + a **Watch Tower** that shoots back (the AI techs up
+too), and play with a **minimap**, **control groups**, and **save/load**.
+_(Remaining slices: audio, balance, walls/gates.)_
 
 ### Controls
 
@@ -42,6 +42,9 @@ minimap, control groups, save/load UI, audio and balance come in later slices.)_
 | **Right-click** foundation / resource / ground | Build / gather / move |
 | Select Town Center → panel | Train villager · **Advance Age** · **Wheelbarrow** (gather upgrade) |
 | Select Blacksmith → panel | Research **Forging / Scale Armor / Fletching / Iron Casting** |
+| **Ctrl/Cmd + 1–9** · **1–9** | Bind the selection to a control group · recall it |
+| **Click / drag the minimap** | Recentre the camera on that part of the map |
+| **Save / Load / Menu** (top-right) | Quick-save to the browser · restore it · back to lobby |
 | `W` `A` `S` `D` / Arrows / edge / middle-drag | Pan · wheel: zoom |
 | `Space` pause · `G` grid · `Esc` cancel | |
 
@@ -114,6 +117,7 @@ src/
     drawWorld.ts       ONE depth-sorted pass: resources/buildings/units + projectiles; fog-gates enemies.
     drawPlacement.ts   The build placement ghost (green/red footprint).
     drawFog.ts         The fog-of-war veil overlay.
+    drawMinimap.ts     Corner minimap: fog-gated terrain + blips + camera viewport.
     colors.ts          Terrain palette.
   input/
     Input.ts           Keyboard/mouse/wheel state, per-frame deltas, edge-scroll.
@@ -160,7 +164,8 @@ src/
 - **Research + ages reuse the training machinery + command buffer.** A building under research carries a `Research{progress,required}` component that `ResearchSystem` advances exactly like a train queue, applying the upgrade (or bumping the age) on completion; ages just gate which buildings/upgrades are available (`ageRequired`), checked in the build/research executor *and* the UI. Both age advances and upgrades are issued as a single `research` command, so the AI and the human share the path. (`ResearchSystem` runs before `DeathSystem` so a tech that finishes on the same tick its building dies still applies.)
 - **Buildings can fight (Watch Tower).** A new `TowerSystem` gives complete towers the building-attacker analogue of `CombatSystem`: find the nearest enemy in range, fire an arrow on cooldown. Towers cost stone (its first real use) and fire as a distinct `"tower"` attacker kind — ranged (pierce-armor) resolution, but no unit counter-bonus.
 - **AI teches by *banking*.** Continuous unit production keeps resources near zero, so the AI would never afford a 400-food age. It instead *pauses new unit training* to bank for its next tech goal (Bronze → Blacksmith → a couple of upgrades → Iron for harder AIs), its standing army still fighting meanwhile, then resumes — a deliberate "tech up" decision rather than a passive surplus.
-- **Divergence — defensive structures partial.** This slice adds the Watch Tower; walls/gates (drag-placement + open/close) and new age-gated units are deferred to a later Phase 6 slice.
+- **Divergence — defensive structures partial.** The tech slice adds the Watch Tower; walls/gates (drag-placement + open/close) and new age-gated units are deferred to a later Phase 6 slice.
+- **QoL/UI is pure view state.** The **minimap** (`drawMinimap.ts`) is its own small canvas that reads the map, world and the human's fog and projects the camera's viewport back to a corner overview; clicking it just moves the camera. **Control groups** (Ctrl+1–9 bind / 1–9 recall) live in `SelectionController` like the selection itself — never serialized; recall prunes dead units. None of this enters the ECS world or a save. **Save/load** serialises `Game.serialize()` to a single `localStorage` slot and restores via `Game.deserialize`, rebuilding the view session around the loaded game; the snapshot carries a `version` so an incompatible save is rejected cleanly rather than corrupting the run.
 
 ### Strictness / quality bar
 
@@ -176,7 +181,7 @@ Full TypeScript strict mode, plus `noUncheckedIndexedAccess`, `exactOptionalProp
 - **Phase 3 — Buildings & construction** ✅ (placement UI, villager-built, Barracks + infantry)
 - **Phase 4 — Combat** ✅ (HP/armor, melee + ranged, projectiles, attack-move, death, fog of war)
 - **Phase 5 — Enemy AI + match flow** ✅ (lobby, rule-based AI, per-tick command buffer, win/lose)
-- **Phase 6 — Depth** (built in slices): **tech tree & ages** ✅ (Blacksmith upgrades, Watch Tower, AI teches up) · _next slices:_ minimap, control groups, save/load UI, audio, balance, walls/gates
+- **Phase 6 — Depth** (built in slices): **tech tree & ages** ✅ · **QoL/UI** ✅ (minimap, control groups, save/load) · _next slices:_ audio, balance, walls/gates
 
 ## Project docs
 

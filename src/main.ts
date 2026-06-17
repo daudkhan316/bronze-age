@@ -6,6 +6,7 @@ import {
 } from "@/config";
 import { Loop } from "@/core/Loop";
 import { Game } from "@/game/Game";
+import type { GameSnapshot } from "@/game/Game";
 import { Renderer } from "@/render/Renderer";
 import { Camera } from "@/render/Camera";
 import { Input } from "@/input/Input";
@@ -17,6 +18,7 @@ import { Lobby } from "@/ui/Lobby";
 import { drawWorld } from "@/render/drawWorld";
 import { drawFog } from "@/render/drawFog";
 import { drawPlacementGhost } from "@/render/drawPlacement";
+import { drawMinimap, minimapToWorld } from "@/render/drawMinimap";
 import {
   CUnit,
   CTransform,
@@ -59,6 +61,12 @@ const menu: HTMLElement = menuEl;
 const gameover: HTMLElement = gameoverEl;
 const resbar = document.getElementById("resbar");
 const controls = document.getElementById("controls");
+const toolbar = document.getElementById("toolbar");
+const minimapEl = document.getElementById("minimap");
+const minimapCanvas = minimapEl instanceof HTMLCanvasElement ? minimapEl : null;
+const minimapCtx = minimapCanvas?.getContext("2d") ?? null;
+/** localStorage key for the single quick-save slot. */
+const SAVE_KEY = "bronze-age-save";
 
 // Persistent across matches: renderer + raw input + the lobby.
 const renderer = new Renderer(canvas);
@@ -409,6 +417,20 @@ function hasSelectedVillager(s: Session): boolean {
   return selectedPlayerUnits(s).some((e) => unitKind(s, e) === "villager");
 }
 
+/** Control groups: Ctrl/Cmd+1–9 binds the current selection; 1–9 recalls it. */
+function handleControlGroups(s: Session): void {
+  const ctrl =
+    input.isKeyDown("ControlLeft") ||
+    input.isKeyDown("ControlRight") ||
+    input.isKeyDown("MetaLeft") ||
+    input.isKeyDown("MetaRight");
+  for (let n = 1; n <= 9; n++) {
+    if (!input.wasPressed(`Digit${n}`)) continue;
+    if (ctrl) s.selection.setGroup(n);
+    else s.selection.recallGroup(n, s.game.world);
+  }
+}
+
 let lastPanelHtml = "";
 
 /** Rebuild the context command panel from the current selection / placement. */
@@ -478,6 +500,7 @@ function frameGame(s: Session, frameDt: number): void {
   if (input.wasPressed("KeyG")) showGrid = !showGrid;
 
   updateCamera(s, frameDt);
+  handleControlGroups(s);
 
   s.placement.update(input, s.camera, s.game.world, s.game.map, s.game.occ);
   if (s.placement.isActive()) {
@@ -520,6 +543,9 @@ function frameGame(s: Session, frameDt: number): void {
   renderer.render(s.camera, s.game.map, showGrid, (ctx) => drawOverlay(s, ctx));
   updateHud(s);
   updateResbar(s);
+  if (minimapCanvas !== null && minimapCtx !== null) {
+    drawMinimap(minimapCtx, minimapCanvas.width, minimapCanvas.height, s.game.map, s.game.world, s.game.fog, s.camera);
+  }
 }
 
 const loop = new Loop({
@@ -555,6 +581,130 @@ if (controls instanceof HTMLElement) {
   });
 }
 
+// --- save / load / minimap navigation -------------------------------------
+
+let saveStatusTimer = 0;
+/** Briefly show a status message in the toolbar. */
+function flashToolbar(msg: string): void {
+  const el = document.getElementById("savestatus");
+  if (!(el instanceof HTMLElement)) return;
+  el.textContent = msg;
+  window.clearTimeout(saveStatusTimer);
+  saveStatusTimer = window.setTimeout(() => {
+    el.textContent = "";
+  }, 1600);
+}
+
+/** Quick-save the live match to localStorage (a single slot). */
+function saveGame(): void {
+  if (session === null) return;
+  try {
+    localStorage.setItem(SAVE_KEY, JSON.stringify(session.game.serialize()));
+    flashToolbar("Saved");
+  } catch {
+    flashToolbar("Save failed");
+  }
+}
+
+/** Load the quick-save, rebuilding the session around the restored game. */
+function loadGame(): void {
+  const raw = localStorage.getItem(SAVE_KEY);
+  if (raw === null) {
+    flashToolbar("No save");
+    return;
+  }
+  let game: Game;
+  try {
+    game = Game.deserialize(JSON.parse(raw) as GameSnapshot);
+  } catch {
+    flashToolbar("Load failed");
+    return;
+  }
+
+  // Keep the existing camera if we were mid-match, else centre on the human base.
+  const camera = session?.camera ?? new Camera();
+  camera.setViewport(renderer.cssWidth, renderer.cssHeight);
+  if (session === null) {
+    const c = game.playerCenterWorld(PLAYER_ID);
+    camera.x = c.x;
+    camera.y = c.y;
+  }
+  const b = game.worldBounds();
+  camera.clampToBounds(b.minX, b.minY, b.maxX, b.maxY);
+
+  session = {
+    game,
+    camera,
+    selection: new SelectionController(),
+    placement: new PlacementController(),
+    attackMoveArmed: false,
+  };
+  lobby.hide();
+  gameover.hidden = true;
+  appState = "playing";
+  if (loop.paused) loop.togglePause();
+  exposeDebug(session);
+  flashToolbar("Loaded");
+}
+
+// Listeners added below are collected here so hot-reload can remove them and
+// not stack duplicates on the persistent DOM/window across dev reloads.
+const hotDisposers: Array<() => void> = [];
+
+// Toolbar: Save / Load / Menu.
+if (toolbar instanceof HTMLElement) {
+  const onToolbarClick = (ev: MouseEvent): void => {
+    const t = ev.target;
+    if (!(t instanceof HTMLElement)) return;
+    const btn = t.closest("[data-action]");
+    if (!(btn instanceof HTMLElement)) return;
+    const action = btn.getAttribute("data-action");
+    if (action === "save") saveGame();
+    else if (action === "load") loadGame();
+    else if (action === "menu" && session !== null) backToMenu();
+    if (btn instanceof HTMLButtonElement) btn.blur();
+  };
+  toolbar.addEventListener("click", onToolbarClick);
+  hotDisposers.push(() => toolbar.removeEventListener("click", onToolbarClick));
+}
+
+// Minimap: click / drag to recentre the camera on the clicked world point.
+if (minimapCanvas !== null) {
+  const mm = minimapCanvas;
+  let minimapDragging = false;
+  const recentre = (ev: MouseEvent): void => {
+    if (session === null || appState !== "playing") return;
+    const rect = mm.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return;
+    const mx = (ev.clientX - rect.left) * (mm.width / rect.width);
+    const my = (ev.clientY - rect.top) * (mm.height / rect.height);
+    const w = minimapToWorld(mx, my, mm.width, mm.height, session.game.map);
+    session.camera.x = w.x;
+    session.camera.y = w.y;
+    const b = session.game.worldBounds();
+    session.camera.clampToBounds(b.minX, b.minY, b.maxX, b.maxY);
+  };
+  const onDown = (ev: MouseEvent): void => {
+    minimapDragging = true;
+    recentre(ev);
+    ev.preventDefault();
+  };
+  const onMove = (ev: MouseEvent): void => {
+    if (minimapDragging) recentre(ev);
+  };
+  const onUp = (): void => {
+    minimapDragging = false;
+  };
+  mm.addEventListener("mousedown", onDown);
+  mm.addEventListener("mousemove", onMove);
+  window.addEventListener("mouseup", onUp);
+  hotDisposers.push(() => {
+    mm.removeEventListener("mousedown", onDown);
+    mm.removeEventListener("mousemove", onMove);
+    window.removeEventListener("mouseup", onUp);
+  });
+}
+
 // Start at the lobby.
 lobby.show();
 loop.start();
@@ -585,5 +735,6 @@ if (import.meta.hot) {
     loop.stop();
     input.dispose();
     window.removeEventListener("resize", syncViewport);
+    for (const d of hotDisposers) d();
   });
 }

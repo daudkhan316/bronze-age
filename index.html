@@ -129,6 +129,52 @@
         user-select: none;
       }
 
+      /* Minimap: corner overview (drawn by src/render/drawMinimap.ts). */
+      #minimap {
+        position: fixed;
+        right: 10px;
+        bottom: 10px;
+        width: 200px;
+        height: 200px;
+        background: #05070a;
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        border-radius: 4px;
+        cursor: crosshair;
+        image-rendering: pixelated;
+      }
+      /* Save / Load / Menu toolbar (top-right). */
+      #toolbar {
+        position: fixed;
+        top: 8px;
+        right: 10px;
+        display: flex;
+        gap: 6px;
+      }
+      #toolbar button {
+        font: inherit;
+        font-size: 12px;
+        color: #e6e6e6;
+        background: rgba(20, 28, 36, 0.92);
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        border-radius: 6px;
+        padding: 6px 12px;
+        cursor: pointer;
+      }
+      #toolbar button:hover:not(:disabled) {
+        background: rgba(40, 54, 68, 0.95);
+      }
+      #toolbar button:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+      }
+      #savestatus {
+        align-self: center;
+        font-size: 12px;
+        color: #8fe39a;
+        padding-right: 4px;
+        user-select: none;
+      }
+
       /* Full-screen modal shells used by the lobby (#menu) and the
          victory/defeat screen (#gameover). Hidden via the `hidden` attribute. */
       .overlay {
@@ -237,7 +283,15 @@
       <div id="help">
         Select: click / drag-box / double-click &nbsp;•&nbsp; Right-click: move / gather / build /
         attack &nbsp;•&nbsp; F: attack-move &nbsp;•&nbsp; villager → build, building → train (Q)
-        &nbsp;•&nbsp; Esc: cancel &nbsp;•&nbsp; WASD / edge / middle-drag: pan, wheel: zoom, Space: pause
+        &nbsp;•&nbsp; Ctrl+1–9 set group / 1–9 recall &nbsp;•&nbsp; Esc: cancel &nbsp;•&nbsp; WASD / edge /
+        middle-drag: pan, wheel: zoom, Space: pause
+      </div>
+      <canvas id="minimap" width="200" height="200"></canvas>
+      <div id="toolbar">
+        <span id="savestatus"></span>
+        <button data-action="save">Save</button>
+        <button data-action="load">Load</button>
+        <button data-action="menu">Menu</button>
       </div>
     </div>
     <!-- Pre-game lobby (filled by src/ui/Lobby.ts) and end-of-match overlay

@@ -47,8 +47,16 @@ export interface WorldBounds {
   maxY: number;
 }
 
+/**
+ * Save-format version. Bump when the snapshot shape changes so `deserialize`
+ * rejects an incompatible save cleanly rather than silently restoring garbage.
+ */
+export const SAVE_VERSION = 1;
+
 /** Complete, JSON-safe snapshot of the simulation for save/load. */
 export interface GameSnapshot {
+  /** Save-format version (see SAVE_VERSION). */
+  version: number;
   seed: number;
   tick: number;
   /** Simulation RNG state (single uint32). */
@@ -326,6 +334,7 @@ export class Game {
 
   serialize(): GameSnapshot {
     return {
+      version: SAVE_VERSION,
       seed: this.seed,
       tick: this.tick,
       rng: this.rng.save(),
@@ -340,6 +349,9 @@ export class Game {
   }
 
   static deserialize(snap: GameSnapshot): Game {
+    if (snap === null || typeof snap !== "object" || snap.version !== SAVE_VERSION) {
+      throw new Error(`Incompatible save (version ${snap?.version}, expected ${SAVE_VERSION})`);
+    }
     const game = new Game(
       {
         seed: snap.seed,
