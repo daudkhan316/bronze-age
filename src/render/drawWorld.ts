@@ -539,6 +539,9 @@ function kindPalette(kind: BuildingKind, owner: number): Palette {
     case "watch_tower":
       // Stone tower with a slate cap.
       return { body: "#9aa0a6", shade: "#767c82", roof: "#55606a" };
+    case "stable":
+      // Warm timber barn with a brown roof.
+      return { body, shade, roof: "#6e4a2c" };
     default:
       return assertNeverPalette(kind);
   }
@@ -552,6 +555,7 @@ function kindScale(kind: BuildingKind): number {
     case "barracks":
     case "archery_range":
     case "blacksmith":
+    case "stable":
       return 1.3;
     case "watch_tower":
       // Tall and narrow — the tower silhouette.
@@ -751,6 +755,8 @@ function drawUnit(
     drawSpearman(ctx, sx, sy, r, unit.owner);
   } else if (unit.kind === "archer") {
     drawArcher(ctx, sx, sy, r, unit.owner);
+  } else if (unit.kind === "cavalry") {
+    drawCavalry(ctx, sx, sy, r, unit.owner);
   } else {
     drawVillager(ctx, sx, sy, r, unit.owner);
   }
@@ -917,6 +923,76 @@ function drawSpearman(
   const headCy = torsoTop - headR * 0.5;
   ctx.beginPath();
   ctx.arc(sx, headCy, headR, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.restore();
+}
+
+/**
+ * Cavalry: a brown horse (elongated body + legs + neck/head) with an owner-
+ * coloured rider seated on top — clearly mounted and bulkier than the infantry.
+ */
+function drawCavalry(
+  ctx: CanvasRenderingContext2D,
+  sx: number,
+  sy: number,
+  r: number,
+  owner: number,
+): void {
+  ctx.save();
+  const fill = ownerColor(owner);
+  const outline = ownerOutline(owner);
+  const horse = "#6b4f34";
+  const horseShade = "#4f3a26";
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
+
+  // Legs down to the ground.
+  ctx.strokeStyle = horseShade;
+  ctx.lineWidth = Math.max(1, r * 0.16);
+  const groundY = sy + r * 0.5;
+  for (const lx of [-0.7, -0.35, 0.35, 0.75]) {
+    ctx.beginPath();
+    ctx.moveTo(sx + r * lx, sy + r * 0.05);
+    ctx.lineTo(sx + r * lx, groundY);
+    ctx.stroke();
+  }
+
+  // Horse body (elongated) + neck and head out front-right.
+  ctx.fillStyle = horse;
+  ctx.strokeStyle = horseShade;
+  ctx.lineWidth = Math.max(1, r * 0.12);
+  ctx.beginPath();
+  ctx.ellipse(sx, sy - r * 0.05, r * 1.0, r * 0.5, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(sx + r * 0.7, sy - r * 0.2);
+  ctx.lineTo(sx + r * 1.2, sy - r * 0.85);
+  ctx.lineTo(sx + r * 1.45, sy - r * 0.66);
+  ctx.lineTo(sx + r * 0.95, sy + r * 0.02);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+
+  // Rider torso + head, seated on the horse's back.
+  ctx.fillStyle = fill;
+  ctx.strokeStyle = outline;
+  ctx.lineWidth = Math.max(1, r * 0.14);
+  const torsoBottom = sy - r * 0.45;
+  const torsoTop = torsoBottom - r * 1.0;
+  ctx.beginPath();
+  ctx.moveTo(sx - r * 0.35, torsoTop);
+  ctx.lineTo(sx + r * 0.35, torsoTop);
+  ctx.lineTo(sx + r * 0.5, torsoBottom);
+  ctx.lineTo(sx - r * 0.5, torsoBottom);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+  const headR = r * 0.38;
+  ctx.beginPath();
+  ctx.arc(sx, torsoTop - headR * 0.5, headR, 0, Math.PI * 2);
   ctx.fill();
   ctx.stroke();
 

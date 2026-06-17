@@ -58,7 +58,7 @@ export const RESOURCE_LEVELS: Record<ResourceLevel, { res: StartResources; label
 export const AI_PARAMS: Record<Difficulty, AiParams> = {
   easy: { thinkInterval: 30, villagerTarget: 7, armyThreshold: 4, buildArcheryRange: false, maxMilitaryPerType: 6 },
   medium: { thinkInterval: 20, villagerTarget: 11, armyThreshold: 7, buildArcheryRange: true, maxMilitaryPerType: 10 },
-  hard: { thinkInterval: 12, villagerTarget: 15, armyThreshold: 11, buildArcheryRange: true, maxMilitaryPerType: 16 },
+  hard: { thinkInterval: 12, villagerTarget: 13, armyThreshold: 9, buildArcheryRange: true, maxMilitaryPerType: 16 },
 };
 
 export const DEFAULT_MATCH_CONFIG: MatchConfig = {

@@ -117,6 +117,7 @@ export class AiSystem implements System {
     // Phase 6 teching: count blacksmiths + watch towers (foundation OR complete,
     // like the barracks count) so maybeTech doesn't re-place ones in flight.
     const blacksmiths: Array<{ e: Entity; b: Building }> = []; // any (foundation/complete)
+    const stables: Array<{ e: Entity; b: Building }> = []; // any (foundation/complete)
     let watchTowers = 0; // foundation OR complete
     for (const [e, b] of world.query(CBuilding)) {
       if (b.owner !== owner) continue;
@@ -124,6 +125,7 @@ export class AiSystem implements System {
       else if (b.kind === "barracks") barracks.push({ e, b });
       else if (b.kind === "archery_range") ranges.push({ e, b });
       else if (b.kind === "blacksmith") blacksmiths.push({ e, b });
+      else if (b.kind === "stable") stables.push({ e, b });
       else if (b.kind === "watch_tower") watchTowers++;
     }
     if (tc === undefined) return; // no base to think from (dead/booting) — bail.
@@ -147,7 +149,7 @@ export class AiSystem implements System {
     // AI returns to pure military. See techSavingGoal.
     const saving =
       villagers >= Math.floor(params.villagerTarget * 0.6) &&
-      this.wantsToBankTech(world, ps, params, tc.e, barracks, blacksmiths);
+      this.wantsToBankTech(world, ps, tc.e, barracks);
 
     // --- 3) Train villagers up to target ----------------------------------
     if (!saving) this.trainVillagers(world, owner, ps, params, villagers, tc.e);
@@ -166,6 +168,16 @@ export class AiSystem implements System {
         this.canAfford(ps, BUILDING_DEFS.archery_range.cost)
       ) {
         this.placeNear(world, owner, "archery_range", tc.b);
+      } else if (
+        // Stable (Age 2) for cavalry — ambitious difficulties only (easy keeps a
+        // simple spear/archer army). Costs wood, so it doesn't fight food-banking.
+        ps.age >= 2 &&
+        ps.difficulty !== "easy" &&
+        (!params.buildArcheryRange || ranges.length > 0) &&
+        stables.length === 0 &&
+        this.canAfford(ps, BUILDING_DEFS.stable.cost)
+      ) {
+        this.placeNear(world, owner, "stable", tc.b);
       }
     }
 
@@ -175,6 +187,8 @@ export class AiSystem implements System {
       if (params.buildArcheryRange) {
         this.trainMilitary(world, owner, ps, params, ranges, "archer");
       }
+      // Cavalry from any Stable (no-op until one exists, i.e. ambitious + Age 2).
+      this.trainMilitary(world, owner, ps, params, stables, "cavalry");
     }
 
     // --- 6) Attack ---------------------------------------------------------
@@ -296,49 +310,28 @@ export class AiSystem implements System {
 
   /**
    * Whether the AI should pause new unit production to bank for its next tech
-   * goal. Tech plan: Bronze age → a Blacksmith → up to two Blacksmith upgrades,
-   * then back to pure military. Crucially this does NOT check affordability —
-   * it stays true until the purchase has STARTED (gated by `canResearch`, which
-   * flips false once the building is busy / the tech is owned). Checking
-   * affordability would oscillate at the cost threshold: the pass food first hits
-   * the cost we'd un-pause, train units, dip back under, and never actually buy.
+   * goal. Crucially this does NOT check affordability — it stays true until the
+   * purchase has STARTED (gated by `canResearch`, which flips false once the age
+   * research is in progress). Checking affordability would oscillate at the cost
+   * threshold: the pass food first hits the cost we'd un-pause, train units, dip
+   * back under, and never actually buy.
+   *
+   * We ONLY pause for the **Bronze age advance** — a single 400-food purchase that
+   * continuous unit production would never let us afford. Everything else (the
+   * Blacksmith, its upgrades, Iron) is pursued opportunistically in `maybeTech`
+   * when a surplus already affords it: pausing production for the whole tech tree
+   * would starve the army for the entire game (it did — that was a bug).
    */
   private wantsToBankTech(
     world: World,
     ps: PlayerState,
-    params: AiParams,
     tcEntity: Entity,
     barracks: Array<{ e: Entity; b: Building }>,
-    blacksmiths: Array<{ e: Entity; b: Building }>,
   ): boolean {
-    const owner = ps.id;
-
-    // Age 1: bank for Bronze once a barracks exists (canResearch flips false once
-    // the age research is in progress, so we resume while it completes).
-    if (ps.age === 1) {
-      return barracks.length > 0 && canResearch(world, owner, tcEntity, "advance_bronze");
-    }
-
-    // Age >= 2: pursue a bounded number of Blacksmith upgrades first.
-    const upgradesDone = ps.techs.filter(
-      (t) => UPGRADE_DEFS[t as UpgradeId]?.building === "blacksmith",
-    ).length;
-    if (upgradesDone < 2) {
-      // Need a Blacksmith first: bank for it until a foundation is down.
-      const smith = blacksmiths.find((x) => x.b.complete);
-      if (smith === undefined) return blacksmiths.length === 0;
-      // Bank for the cheapest eligible Blacksmith upgrade (a busy smith ⇒ none
-      // eligible ⇒ false ⇒ production resumes while it researches).
-      const order: UpgradeId[] = params.buildArcheryRange
-        ? ["forging", "fletching", "scale_armor"]
-        : ["forging", "scale_armor"];
-      return order.some((id) => canResearch(world, owner, smith.e, id));
-    }
-
-    // Blacksmith plan done: ambitious AIs bank for the Iron age advance (mirrors
-    // the Bronze arm — canResearch flips false once it's in progress).
-    const ambitious = ps.difficulty !== "easy";
-    return ambitious && ps.age === 2 && canResearch(world, owner, tcEntity, "advance_iron");
+    // Easy never techs — banking 400 food with its tiny economy would pause the
+    // army for the whole game. It just makes spearmen and attacks.
+    if (ps.difficulty === "easy") return false;
+    return ps.age === 1 && barracks.length > 0 && canResearch(world, ps.id, tcEntity, "advance_bronze");
   }
 
   /**
@@ -579,7 +572,7 @@ export class AiSystem implements System {
     ps: PlayerState,
     params: AiParams,
     buildings: Array<{ e: Entity; b: Building }>,
-    unit: "spearman" | "archer",
+    unit: "spearman" | "archer" | "cavalry",
   ): void {
     if (buildings.length === 0) return;
     let count = 0;

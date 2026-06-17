@@ -36,7 +36,7 @@ export interface Movement {
   stuck: number;
 }
 
-export type UnitKind = "villager" | "spearman" | "archer";
+export type UnitKind = "villager" | "spearman" | "archer" | "cavalry";
 
 /** Marks an entity as a unit (selectable, commandable, collidable). */
 export interface Unit {
@@ -97,6 +97,13 @@ export const UNIT_STATS: Record<UnitKind, UnitDef> = {
     attack: 4, armor: 0, pierceArmor: 0, range: 5, attackCooldown: 2.5, sight: 6,
     cost: { wood: 25, gold: 45 }, trainTicks: 50, trainedAt: "archery_range",
   },
+  cavalry: {
+    // Fast + tanky melee with a little pierce-armor (shrugs off arrows). Hard-
+    // countered by spearmen; runs down archers. Trained at the Stable (Age 2).
+    speed: 72, radius: 12, hp: 80,
+    attack: 9, armor: 1, pierceArmor: 1, range: 0, attackCooldown: 2, sight: 6,
+    cost: { food: 70, gold: 20 }, trainTicks: 75, trainedAt: "stable",
+  },
 };
 
 // ---------------------------------------------------------------------------
@@ -129,7 +136,8 @@ export type BuildingKind =
   | "mining_camp"
   | "mill"
   | "blacksmith"
-  | "watch_tower";
+  | "watch_tower"
+  | "stable";
 
 /**
  * A placed building, occupying a `w`×`h` block of tiles with origin (tx,ty).
@@ -308,6 +316,7 @@ export const BUILDING_DEFS: Record<BuildingKind, BuildingDef> = {
   mill: { w: 2, h: 2, cost: { wood: 80 }, buildTicks: 35, maxHp: 300, pop: 0, accepts: ["food"], trains: null, sight: 4, ageRequired: 1, label: "Mill" },
   blacksmith: { w: 3, h: 3, cost: { wood: 150 }, buildTicks: 100, maxHp: 500, pop: 0, accepts: [], trains: null, sight: 4, ageRequired: 2, label: "Blacksmith" },
   watch_tower: { w: 2, h: 2, cost: { wood: 50, stone: 100 }, buildTicks: 80, maxHp: 400, pop: 0, accepts: [], trains: null, sight: 8, ageRequired: 2, label: "Watch Tower", attack: 5, range: 6, attackCooldown: 1.5 },
+  stable: { w: 3, h: 3, cost: { wood: 150 }, buildTicks: 100, maxHp: 500, pop: 0, accepts: [], trains: "cavalry", sight: 5, ageRequired: 2, label: "Stable" },
 };
 
 /** Build points one builder contributes per second (× dt per tick). */
@@ -321,6 +330,7 @@ export const BUILDABLE_KINDS: readonly BuildingKind[] = [
   "house",
   "barracks",
   "archery_range",
+  "stable",
   "blacksmith",
   "watch_tower",
   "lumber_camp",
@@ -390,8 +400,12 @@ export const PROJECTILE_HIT_DIST = 12;
  * villagers.
  */
 export const DAMAGE_BONUS: Partial<Record<AttackerKind, Partial<Record<UnitKind, number>>>> = {
-  spearman: { archer: 3 },
+  // Rock-paper-scissors: spearmen wreck cavalry, cavalry run down archers,
+  // archers harry villagers (and out-range spearmen). Spearmen also punch up
+  // against archers in melee.
+  spearman: { archer: 3, cavalry: 12 },
   archer: { villager: 2 },
+  cavalry: { archer: 4, villager: 2 },
 };
 
 // ---------------------------------------------------------------------------
